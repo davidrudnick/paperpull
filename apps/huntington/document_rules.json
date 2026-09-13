@@ -1,0 +1,27 @@
+{
+  "_comment": "Editable rules mapping Huntington document titles to filename summaries. Huntington's own API already says WHICH KIND a record is (statement / taxDocument / correspondence) and the app files by that, so these rules only choose the wording inside the filename. Statement titles are a date range ('07/02/2026 - 08/03/2026') or 'MM/DD/YYYY Escrow Analysis'; tax titles read like '2025 1098 YEAR-END STATEMENT'; correspondence titles are 'MM/DD/YYYY Correspondence'. Repair these using the titles diagnose reports.",
+  "tax_rules": [
+    {"pattern": "\\b1098\\b", "summary": "1098 Tax Form"},
+    {"pattern": "1099-?INT\\b", "summary": "1099-INT Tax Form"},
+    {"pattern": "1099-?MISC\\b", "summary": "1099-MISC Tax Form"},
+    {"pattern": "1099-?C\\b", "summary": "1099-C Tax Form"},
+    {"pattern": "\\b1099\\b", "summary": "1099 Tax Form"},
+    {"pattern": "\\b5498\\b", "summary": "5498 Tax Form"},
+    {"pattern": "tax\\s+(document|form|statement|package|information)", "summary": "Tax Document"}
+  ],
+  "insurance_rules": [],
+  "statement_rules": [
+    {"pattern": "escrow\\s+analysis", "summary": "Escrow Analysis"},
+    {"pattern": "\\bmonthly\\s+statement\\b", "summary": "Monthly Statement"},
+    {"pattern": "\\bstatement\\b", "summary": "Statement"}
+  ],
+  "skip_patterns": [
+    "\\bagreement\\b",
+    "disclosure",
+    "privacy\\s+(pledge|notice|policy|statement)",
+    "terms\\s+(of\\s+service|and\\s+conditions)",
+    "marketing",
+    "promotional",
+    "balancing\\s+worksheet"
+  ]
+}
