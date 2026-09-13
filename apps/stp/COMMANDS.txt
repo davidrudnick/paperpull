@@ -1,0 +1,3 @@
+STP / BluePrint investment documents
+
+See README.md for setup and supervised pilot instructions.
