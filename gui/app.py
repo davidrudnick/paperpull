@@ -470,11 +470,19 @@ def create_install(root: Path, slug: str) -> str:
                or part.lower().endswith(".pdf")
                for part in rel.parts):
             continue
+        if item.is_symlink():
+            continue
         if item.is_dir():
-            (dst / rel).mkdir(parents=True, exist_ok=True)
-        else:
-            (dst / rel).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(item, dst / rel)
+            continue
+        # Only source assets become templates. Runtime reports, alternate
+        # configs, state backups and spreadsheet downloads stay private.
+        if item.suffix.lower() in {".py", ".bat", ".command", ".md"}:
+            pass
+        elif item.name not in {"config.example.json", "document_rules.json",
+                               "category_rules.json", "requirements.txt", "COMMANDS.txt"}:
+            continue
+        (dst / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(item, dst / rel)
     example = dst / "config.example.json"
     if example.is_file():
         # The example IS the config for a fresh install. Its output_dir and
