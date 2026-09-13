@@ -92,3 +92,9 @@ status.html
 
 # build output
 dist/
+
+# Additional provider output stays private
+*.xlsx
+**/Investor Reporting/
+**/Onboarding/
+**/Fund Materials/

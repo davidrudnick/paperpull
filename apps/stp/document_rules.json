@@ -1,0 +1,21 @@
+{
+  "_comment": "Editable rules for STP Investment Services (BluePrint) document names. The portal's report already says WHICH KIND a document is (Document_Type_Name: Capital Call Notice / K-1 / Partner Capital Statement / ...) and which curated folder it lives in (Investor Reporting / Tax / Onboarding / Fund Materials); the app files by the folder and keeps the document's own name as the summary, so these rules exist only for wording tweaks and are nearly empty. NOTE: agreements (Subscription Agreement, Operating Agreement) are IN scope on this portal - do not add an 'agreement' skip pattern.",
+  "tax_rules": [
+    {"pattern": "\\bK-?1\\b", "summary": "K-1"},
+    {"pattern": "\\bW-?9\\b", "summary": "W-9"},
+    {"pattern": "\\bW-?8\\b", "summary": "W-8"},
+    {"pattern": "\\b1099\\b", "summary": "1099 Tax Form"},
+    {"pattern": "tax\\s+(document|form|statement|package|information)", "summary": "Tax Document"}
+  ],
+  "insurance_rules": [],
+  "statement_rules": [
+    {"pattern": "partner\\s+capital\\s+statement", "summary": "Partner Capital Statement"},
+    {"pattern": "\\bstatement\\b", "summary": "Statement"}
+  ],
+  "skip_patterns": [
+    "privacy\\s+(pledge|notice|policy|statement)",
+    "terms\\s+(of\\s+service|and\\s+conditions)",
+    "marketing",
+    "promotional"
+  ]
+}
