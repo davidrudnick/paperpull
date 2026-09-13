@@ -92,3 +92,7 @@ status.html
 
 # build output
 dist/
+
+# Additional provider output stays private
+**/Escrow Analyses/
+**/Correspondence/

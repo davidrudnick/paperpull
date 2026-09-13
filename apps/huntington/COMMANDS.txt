@@ -1,0 +1,3 @@
+Huntington statements, tax forms, escrow analyses and correspondence
+
+See README.md for setup and supervised pilot instructions.
