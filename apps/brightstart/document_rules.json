@@ -1,0 +1,22 @@
+{
+  "_comment": "Editable rules mapping Bright Start document type labels to filename summaries. The listing's Type column already says WHICH KIND a row is and the app files by that, so these rules only choose the wording inside the filename. Labels recorded live 2026-08-21: 'Statement', 'Important Plan Information', 'Financial Confirmation', 'Change Investment Allocations', 'Add Funding Instructions', 'Delete Funding Instructions', 'New Account', 'New Web Registration', 'E-Delivery changed to Paper'. No tax row has been seen yet (no withdrawals on the probed login); a 1099-Q is expected once distributions start. Repair these using the labels diagnose reports.",
+  "tax_rules": [
+    {"pattern": "1099-?Q\\b", "summary": "1099-Q Tax Form"},
+    {"pattern": "\\b1099\\b", "summary": "1099 Tax Form"},
+    {"pattern": "\\b5498\\b", "summary": "5498 Tax Form"},
+    {"pattern": "tax\\s+(document|form|statement|package|information)", "summary": "Tax Document"}
+  ],
+  "insurance_rules": [],
+  "statement_rules": [
+    {"pattern": "important\\s+plan\\s+information", "summary": "Important Plan Information"},
+    {"pattern": "\\bquarterly\\s+statement\\b", "summary": "Quarterly Statement"},
+    {"pattern": "\\bstatement\\b", "summary": "Statement"}
+  ],
+  "skip_patterns": [
+    "\\bagreement\\b",
+    "privacy\\s+(pledge|notice|policy|statement)",
+    "terms\\s+(of\\s+service|and\\s+conditions)",
+    "marketing",
+    "promotional"
+  ]
+}
