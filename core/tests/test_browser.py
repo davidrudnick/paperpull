@@ -109,7 +109,8 @@ def test_port_is_read_from_the_cdp_url(url, expected):
 
 def test_launch_passes_the_profile_and_port(monkeypatch, tmp_path):
     seen = {}
-    monkeypatch.setattr(browser, "find_browser", lambda prefer_real=False: ("Chromium", "/x/c"))
+    monkeypatch.setattr(browser, "browser_candidates",
+                        lambda **kwargs: [("Chromium", "/x/c")])
     monkeypatch.setattr(browser.subprocess, "Popen", lambda args, **kw: seen.update(args=args))
     # no real browser starts here, so stand in for the port coming up
     monkeypatch.setattr(browser, "wait_for_debug_port", lambda port, timeout=20.0: True)
