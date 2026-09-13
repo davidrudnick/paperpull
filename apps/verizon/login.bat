@@ -1,5 +1,7 @@
 @echo off
 cd /d "%~dp0"
+set "PP_PY=.venv\Scripts\python.exe"
+if exist "..\..\.venv\Scripts\python.exe" set "PP_PY=..\..\.venv\Scripts\python.exe"
 rem  login.bat          -> your account (config.json, port 9230)
 rem  login.bat spouse   -> config.spouse.json (own folders, profile, port)
 if "%~1"=="" (set "CFG=") else (set "CFG=--config config.%~1.json")
@@ -18,6 +20,6 @@ echo READ-ONLY: this tool only downloads statements and tax documents.
 echo It NEVER buys, sells, trades, transfers, withdraws, moves crypto, or
 echo changes any setting.
 echo.
-.venv\Scripts\python.exe verizon_docs.py --open-browser %CFG%
+"%PP_PY%" verizon_docs.py --open-browser %CFG%
 echo.
 pause

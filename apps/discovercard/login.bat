@@ -1,5 +1,7 @@
 @echo off
 cd /d "%~dp0"
+set "PP_PY=.venv\Scripts\python.exe"
+if exist "..\..\.venv\Scripts\python.exe" set "PP_PY=..\..\.venv\Scripts\python.exe"
 rem  login.bat          -> your account (config.json, port 9235)
 rem  login.bat spouse   -> config.spouse.json (own folders, profile, port)
 if "%~1"=="" (set "CFG=") else (set "CFG=--config config.%~1.json")
@@ -19,6 +21,6 @@ echo It NEVER pays your bill, sets up autopay, transfers a balance,
 echo takes a cash advance, redeems Cashback Bonus or Miles, freezes
 echo or replaces your card, or changes any account setting.
 echo.
-.venv\Scripts\python.exe discovercard_docs.py --open-browser %CFG%
+"%PP_PY%" discovercard_docs.py --open-browser %CFG%
 echo.
 pause

@@ -1,5 +1,7 @@
 @echo off
 cd /d "%~dp0"
+set "PP_PY=.venv\Scripts\python.exe"
+if exist "..\..\.venv\Scripts\python.exe" set "PP_PY=..\..\.venv\Scripts\python.exe"
 rem  login.bat          -> your account (config.json, port 9234)
 rem  login.bat spouse   -> config.spouse.json (own folders, profile, port)
 if "%~1"=="" (set "CFG=") else (set "CFG=--config config.%~1.json")
@@ -19,6 +21,6 @@ echo.
 echo If the window opens somewhere unexpected, set "base_url" in config.json
 echo to the address you see in your browser once signed in.
 echo.
-.venv\Scripts\python.exe ukg_docs.py --open-browser %CFG%
+"%PP_PY%" ukg_docs.py --open-browser %CFG%
 echo.
 pause

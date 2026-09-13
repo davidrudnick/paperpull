@@ -92,3 +92,18 @@ status.html
 
 # build output
 dist/
+
+# Fork features and additional document types
+.panel-runs.json*
+gui-state.json*
+*.xlsx
+**/Escrow Analyses/
+**/Correspondence/
+**/Confirmations/
+**/Reports/
+**/Investor Reporting/
+**/Onboarding/
+**/Fund Materials/
+
+# Personal assistant settings stay local
+.claude/

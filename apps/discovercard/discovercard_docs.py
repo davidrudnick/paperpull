@@ -204,7 +204,7 @@ class App:
             # URL also matches "provider.com.phish.example".
             live = [p for p in ctx.pages if not p.is_closed()]
             discovercard = [p for p in live if site.is_safe_url(p.url or "")]
-            self._work_page = discovercard[0] if discovercard else (live[0] if live else ctx.new_page())
+            self._work_page = discovercard[0] if discovercard else ctx.new_page()
         else:
             self._work_page = ctx.pages[0] if ctx.pages else ctx.new_page()
         return self._work_page

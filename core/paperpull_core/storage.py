@@ -71,6 +71,13 @@ def load_config(path: Optional[Path] = None) -> dict:
     cfg.setdefault("max_path_length", 240)
     cfg.setdefault("delay_min_seconds", 2.0)
     cfg.setdefault("delay_max_seconds", 4.0)
+    if cfg.get("browser_profile_mode") == "shared":
+        app_dir = sp.project_dir.resolve()
+        shared_root = (app_dir.parent.parent if app_dir.parent.name == "apps"
+                       else app_dir.parent)
+        cfg.setdefault("profile_dir", str(shared_root / "browser-profile"))
+        cfg.setdefault("cdp_url", "http://127.0.0.1:9222")
+        cfg.setdefault("browser", "installed-chrome")
     cfg.setdefault("profile_dir", str(sp.project_dir / f"{sp.slug}-browser-profile"))
     cfg.setdefault("owner", "")
     cfg.setdefault("owner_in_filename", False)

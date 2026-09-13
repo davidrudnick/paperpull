@@ -23,6 +23,7 @@ HEADER = """#!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
 PY=.venv/bin/python
+if [ -x "../../.venv/bin/python" ]; then PY=../../.venv/bin/python; fi
 
 # No argument = your account. An argument = that named account, e.g.
 #   ./run_all.command spouse   ->  --config config.spouse.json
@@ -82,7 +83,7 @@ def shell_quote(text: str) -> str:
     return "'" + text.replace("'", "'" + chr(92) + "''") + "'"
 
 
-ACTION_RE = re.compile(r"python\.exe\s+(\S+\.py)\s+(--[\w-]+)", re.I)
+ACTION_RE = re.compile(r"(?:python\.exe|"%PP_PY%")\s+(\S+\.py)\s+(--[\w-]+)", re.I)
 
 
 def build(app_dir: Path) -> list:

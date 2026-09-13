@@ -33,6 +33,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
+from paperpull_core import browser as browser_launcher
 from paperpull_core import classification, receipt_pdf
 import target_site as site
 from paperpull_core.models import (DONE_STATES, IN_STORE, ONLINE, Item, Purchase, State)
@@ -90,6 +91,9 @@ class App:
         self.rules = classification.load_rules()
 
         self._pw = None
+        self._browser = None
+        self._work_page = None
+        self._cdp_mode = False
         self._context = None
         self.stats = {
             "mode": "", "started": now_iso(), "ended": "",
@@ -116,41 +120,79 @@ class App:
         time.sleep(random.uniform(lo, hi))
 
     def browser(self):
-        """Launch (or return) the persistent, headed, supervised browser."""
+        """Return the supervised browser context.
+
+        Default mode is CDP-attach: login.bat opens the shared PaperPull
+        Chrome (or adds a Target tab to it), the user signs in as a human,
+        and this tool connects to that already-open browser over the
+        DevTools protocol. Set "cdp_url" to "" in config.json to fall back to
+        launching a dedicated browser on this config's own profile instead.
+        """
         if self._context is not None:
             return self._context
         from playwright.sync_api import sync_playwright
-        # This app drives Playwright's own Chromium directly rather than
-        # attaching to a browser the user launched, so an installed Edge or
-        # Chrome is no substitute here. Ask before Playwright raises its own
-        # error, which tells somebody to run a command rather than explaining
-        # what is missing or how large the download is.
-        from paperpull_core import browser as browser_launcher
-        if not browser_launcher.bundled_chromium_present():
-            if not browser_launcher.fetch_bundled_chromium():
-                raise SystemExit(
-                    "This app needs its own copy of Chromium and one is not "
-                    "installed.")
         self._pw = sync_playwright().start()
-        profile = Path(self.config["profile_dir"]).expanduser().resolve()
-        profile.mkdir(parents=True, exist_ok=True)
-        self._context = self._pw.chromium.launch_persistent_context(
-            str(profile),
-            headless=False,
-            accept_downloads=True,
-            viewport={"width": 1400, "height": 950},
-        )
-        self._context.add_init_script(receipt_pdf.PRINT_SUPPRESS_INIT_SCRIPT)
+
+        cdp_url = self.config.get("cdp_url")
+        if cdp_url:
+            try:
+                self._browser = self._pw.chromium.connect_over_cdp(cdp_url)
+            except Exception as e:
+                self._pw.stop()
+                self._pw = None
+                raise SystemExit(
+                    f"Could not connect to your signed-in browser at {cdp_url}.\n"
+                    f"Run login.bat first and keep that browser window OPEN.\n"
+                    f"({e})")
+            if not self._browser.contexts:
+                raise SystemExit("Connected browser has no context; open a tab and retry.")
+            self._context = self._browser.contexts[0]
+            self._cdp_mode = True
+            try:
+                self._context.add_init_script(receipt_pdf.PRINT_SUPPRESS_INIT_SCRIPT)
+            except Exception:
+                pass
+        else:
+            if not browser_launcher.bundled_chromium_present():
+                if not browser_launcher.fetch_bundled_chromium():
+                    raise SystemExit("This app needs a bundled Chromium for standalone mode.")
+            profile = Path(self.config["profile_dir"]).expanduser().resolve()
+            profile.mkdir(parents=True, exist_ok=True)
+            self._context = self._pw.chromium.launch_persistent_context(
+                str(profile),
+                headless=False,
+                accept_downloads=True,
+                viewport={"width": 1400, "height": 950},
+            )
+            self._context.add_init_script(receipt_pdf.PRINT_SUPPRESS_INIT_SCRIPT)
+            self._cdp_mode = False
         self._context.set_default_timeout(30000)
         return self._context
 
     def page(self):
+        """A dedicated work page. In CDP mode that is a fresh tab in the
+        shared, signed-in browser - the human's own tabs are left alone."""
         ctx = self.browser()
-        return ctx.pages[0] if ctx.pages else ctx.new_page()
+        if self._work_page is not None and not self._work_page.is_closed():
+            return self._work_page
+        if self._cdp_mode:
+            self._work_page = ctx.new_page()
+        else:
+            self._work_page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        try:
+            self._work_page.add_init_script(receipt_pdf.PRINT_SUPPRESS_INIT_SCRIPT)
+        except Exception:
+            pass
+        return self._work_page
 
     def close(self):
+        # In CDP mode the browser belongs to the user: close only our own
+        # work page and disconnect; never close the user's browser.
         try:
-            if self._context:
+            if self._cdp_mode:
+                if self._work_page is not None and not self._work_page.is_closed():
+                    self._work_page.close()
+            elif self._context:
                 self._context.close()
         except Exception:
             pass
@@ -161,6 +203,7 @@ class App:
             pass
         self._context = None
         self._pw = None
+        self._work_page = None
 
     # -- session safety -----------------------------------------------------
 
@@ -182,7 +225,41 @@ class App:
 
     # -- commands -----------------------------------------------------------
 
+    def cmd_open_browser(self):
+        """Open Target's sign-in page in the shared PaperPull browser.
+
+        Every app shares one Chrome window, profile and port (see
+        paperpull_core.browser); if it is already open this just adds a tab.
+        You sign in; the tool attaches afterwards.
+        """
+        if not self.config.get("cdp_url"):
+            return self.cmd_login()
+        port = browser_launcher.port_from_cdp_url(self.config.get("cdp_url", ""), "9222")
+        profile = self.config["profile_dir"]
+        url = site.URLS.get("orders") or site.URLS.get("login") or site.URLS["home"]
+        name = browser_launcher.open_signin_browser(profile, port, url,
+            prefer_real=True, mode=self.config.get("browser", "auto"))
+        if not name:
+            return
+        print(f"Opened a sign-in browser on port {port} ({name}).")
+        print(f"Profile: {profile}")
+        print("Sign in, keep the window OPEN, then run the pilot.")
+
     def cmd_login(self):
+        if self.config.get("cdp_url"):
+            # CDP mode: the browser is opened by login.bat, not here. This just
+            # verifies the connection and that you are signed in.
+            print("Checking the connection to your signed-in Target browser...\n")
+            page = self.page()
+            site.goto_orders(page)
+            if site.looks_signed_out(page):
+                print("Connected, but Target shows the signed-out page.")
+                print("Sign in in the open browser window (keep it OPEN), then re-run --login.")
+            else:
+                print("Success: connected to your signed-in Target session.")
+                print("Keep that browser window OPEN, then run the pilot.")
+            self.close()
+            return
         print("Opening Target.com in a dedicated supervised browser profile.")
         print("Sign in manually (username, password, any verification codes).")
         print("This tool never touches your credentials.\n")
@@ -992,6 +1069,7 @@ class App:
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Local supervised Target receipt downloader")
+    ap.add_argument("--open-browser", action="store_true", help="open a browser for manual sign-in")
     modes = [
         ("login", "open browser for manual Target sign-in"),
         ("discover", "discovery pass only; writes discovery.json"),
@@ -1035,7 +1113,9 @@ def main(argv=None):
 
     app = App(args)
     try:
-        if args.login:
+        if getattr(args, "open_browser", False):
+            app.cmd_open_browser()
+        elif args.login:
             app.cmd_login()
         elif args.discover:
             app.cmd_discover()

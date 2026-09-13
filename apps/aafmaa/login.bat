@@ -1,5 +1,7 @@
 @echo off
 cd /d "%~dp0"
+set "PP_PY=.venv\Scripts\python.exe"
+if exist "..\..\.venv\Scripts\python.exe" set "PP_PY=..\..\.venv\Scripts\python.exe"
 rem  login.bat          -> your account (config.json, port 9225)
 rem  login.bat spouse   -> config.spouse.json (own folders, profile, port)
 if "%~1"=="" (set "CFG=") else (set "CFG=--config config.%~1.json")
@@ -19,6 +21,6 @@ echo and tax forms. It NEVER pays a premium, requests or repays a loan,
 echo surrenders or withdraws value, changes a beneficiary, or changes
 echo any setting.
 echo.
-.venv\Scripts\python.exe aafmaa_docs.py --open-browser %CFG%
+"%PP_PY%" aafmaa_docs.py --open-browser %CFG%
 echo.
 pause

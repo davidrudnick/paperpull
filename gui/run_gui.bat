@@ -4,6 +4,11 @@ rem  Control panel for the downloader apps.
 rem  Optional: point it at your existing working copies instead of ..\apps:
 rem     set APPS_ROOT=C:\path\to\Receipt and Statement Downloader
 rem     run_gui.bat
+if exist "..\.venv\Scripts\python.exe" (
+  start "" http://127.0.0.1:8765
+  "..\.venv\Scripts\python.exe" -m uvicorn app:app --port 8765
+  exit /b
+)
 if not exist ".venv\Scripts\python.exe" (
   echo Setting up the GUI virtual environment...
   python -m venv .venv

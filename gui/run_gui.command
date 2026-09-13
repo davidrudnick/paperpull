@@ -7,6 +7,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+if [ -x "../.venv/bin/python" ]; then
+    echo "Opening http://127.0.0.1:8765"
+    (sleep 2 && open http://127.0.0.1:8765 2>/dev/null || true) &
+    exec ../.venv/bin/python -m uvicorn app:app --port 8765
+fi
+
 if [ ! -x ".venv/bin/python" ]; then
     echo "Setting up the GUI virtual environment..."
     python3 -m venv .venv

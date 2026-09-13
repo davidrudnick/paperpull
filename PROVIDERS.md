@@ -10,11 +10,17 @@ telecoms, payroll systems, and retailers real people actually use.
   [provider request](https://github.com/rheeloaded/paperpull/issues/new/choose)
   so someone with that account can pick it up.
 
-## Supported (22)
+## Supported (28)
 
 | App | Provider | Documents | Category |
 |-----|----------|-----------|----------|
 | [`aafmaa`](apps/aafmaa) | AAFMAA (Armed Forces Mutual) | Annual statements, policy & insurance documents | Insurance / member association |
+| [`brightstart`](apps/brightstart) | Bright Start 529 | Statements, confirmations, tax forms, plan inserts | 529 plan |
+| [`capitalone`](apps/capitalone) | Capital One | Bank and card statements, tax forms, letters | Bank / card |
+| [`huntington`](apps/huntington) | Huntington Bank | Statements, escrow analyses, tax forms, correspondence | Bank |
+| [`schwab`](apps/schwab) | Charles Schwab | Statements, tax forms, letters, trade confirmations | Brokerage |
+| [`stp`](apps/stp) | STP / BluePrint | Investment notices, statements, tax and fund documents | Investments |
+| [`usbank`](apps/usbank) | U.S. Bank | Credit-card statements | Card |
 | [`ally`](apps/ally) | Ally Bank | Account statements, tax forms | Bank |
 | [`amazon`](apps/amazon) | Amazon | Order invoices (full history) | Retail |
 | [`amex`](apps/amex) | American Express | Statements, year-end summary | Card |

@@ -33,6 +33,8 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import run_history
+
 from anyio import to_thread
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -181,6 +183,11 @@ def _venv_python(app_dir: Path):
 
     Windows puts it in .venv\Scripts\python.exe; macOS and Linux use
     .venv/bin/python."""
+    if app_dir.parent.name == "apps":
+        for rel in ("Scripts/python.exe", "bin/python", "bin/python3"):
+            shared = app_dir.parent.parent / ".venv" / rel
+            if shared.exists():
+                return shared
     for rel in ("Scripts/python.exe", "bin/python", "bin/python3"):
         candidate = app_dir / ".venv" / rel
         if candidate.exists():
@@ -319,6 +326,7 @@ def api_status():
         item = {k: _jsonable(v) for k, v in row.items() if k != "gaps"}
         item["label"] = mod.LABEL.get(row.get("status"), str(row.get("status")))
         item["cadence"] = mod._fmt_cadence(row.get("cadence_days"))
+        item["panel_runs"] = run_history.completed(apps_root() / row["folder"])
         out.append(item)
     return {"available": True, "root": str(apps_root()), "rows": out, "gaps": gaps}
 
@@ -386,7 +394,7 @@ _KIND_RE = re.compile(r"kind\s*=\s*(DOCUMENT|RECEIPT)")
 # of these sitting beside the code.
 _TEMPLATE_SKIP = {".venv", "__pycache__", ".pytest_cache", "tests", "Backups",
                   "Logs", "Diagnostics", "Manual Review", "config.json",
-                  "progress.json", "discovery.json"}
+                  "progress.json", "discovery.json", ".panel-runs.json"}
 
 
 def _templates_root() -> Path | None:
@@ -470,11 +478,19 @@ def create_install(root: Path, slug: str) -> str:
                or part.lower().endswith(".pdf")
                for part in rel.parts):
             continue
+        if item.is_symlink():
+            continue
         if item.is_dir():
-            (dst / rel).mkdir(parents=True, exist_ok=True)
-        else:
-            (dst / rel).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(item, dst / rel)
+            continue
+        # Only source assets become templates. Runtime reports, alternate
+        # configs, state backups and spreadsheet downloads stay private.
+        if item.suffix.lower() in {".py", ".bat", ".command", ".md"}:
+            pass
+        elif item.name not in {"config.example.json", "document_rules.json",
+                               "category_rules.json", "requirements.txt", "COMMANDS.txt"}:
+            continue
+        (dst / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(item, dst / rel)
     example = dst / "config.example.json"
     if example.is_file():
         # The example IS the config for a fresh install. Its output_dir and
@@ -689,6 +705,11 @@ def api_run(app: str, account: str = "primary", action: str = "pilot"):
                     break
                 yield f"data: {line.rstrip()}\n\n"
             code = await to_thread.run_sync(proc.wait)
+            if code == 0 and action != "login":
+                try:
+                    await to_thread.run_sync(run_history.record, Path(meta["dir"]), account, action)
+                except OSError:
+                    yield "data: [run finished, but its panel timestamp could not be saved]\n\n"
             yield "data: \n\n"
             yield f"event: done\ndata: {code}\n\n"
         finally:
@@ -1014,6 +1035,13 @@ function esc(s) {
     c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+function formatPanelRuns(runs) {
+  const entries = Object.entries(runs || {});
+  if (!entries.length) return 'never';
+  return entries.map(([account, stamp]) =>
+    esc(account) + ': ' + esc(new Date(stamp).toLocaleString())).join('<br>');
+}
+
 async function loadStatus() {
   $('stbody').textContent = 'scanning...';
   $('stnote').textContent = '';
@@ -1029,10 +1057,11 @@ async function loadStatus() {
     '<td>' + esc(r.newest || '') + '</td>' +
     '<td class="num">' + (r.age_days == null ? '' : r.age_days + ' d') + '</td>' +
     '<td>' + esc(r.cadence || '') + '</td>' +
+    '<td>' + formatPanelRuns(r.panel_runs) + '</td>' +
     '<td><span class="pill ' + pillClass(r.label) + '">' + esc(r.label) + '</span></td></tr>'
   ).join('');
   let html = '<table class="st"><thead><tr><th>Provider</th><th class="num">Docs</th>' +
-    '<th>Newest</th><th class="num">Age</th><th>Every</th><th>Status</th></tr></thead><tbody>' +
+    '<th>Newest</th><th class="num">Age</th><th>Every</th><th>Last panel run</th><th>Status</th></tr></thead><tbody>' +
     body + '</tbody></table>';
   if (d.gaps.length) {
     html += '<div class="gapbox"><h3>Possible gaps</h3>' +
@@ -1050,7 +1079,7 @@ async function loadStatus() {
     html += '</div>';
   }
   $('stbody').innerHTML = html;
-  $('stnote').textContent = 'scanned ' + d.root;
+  $('stnote').textContent = 'scanned ' + d.root + ' · Last panel run: Run All or Resume exited successfully; CLI runs are not tracked.';
 }
 
 let META = null, es = null;
@@ -1109,6 +1138,7 @@ function run(action) {
   es.onmessage = e => { con.textContent += e.data + '\n'; con.scrollTop = con.scrollHeight; };
   es.addEventListener('done', e => {
     const code = e.data;
+    STATUS_LOADED = false;
     setStatus(code === '0' ? 'ok' : 'err', code === '0' ? 'finished' : `exited (code ${code})`);
     document.querySelectorAll('button').forEach(b => b.disabled = false);
     es.close(); es = null;

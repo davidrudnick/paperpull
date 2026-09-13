@@ -259,3 +259,15 @@ def test_only_a_discovered_app_can_be_removed(templates, settings, tmp_path):
         assert e.value.status_code == 404, name
     assert (tmp_path / "elsewhere").exists()
     assert (home / "Bank Statements").exists()
+
+
+def test_template_copy_excludes_private_variants_and_downloads(templates, settings, tmp_path):
+    private = ["config.secondary.json", "config.json.save", "progress.json.bak",
+               ".panel-runs.json", ".panel-runs.json.tmp", "run-summary.txt",
+               "new-this-run.txt", "Document Index.csv", "allocation.xlsx", "archive.zip"]
+    for name in private:
+        (templates / "bank" / name).write_text("synthetic private fixture")
+    home = tmp_path / "home"
+    _create({"root": str(home), "providers": ["bank"]})
+    for name in private:
+        assert not (home / "Bank Statements" / name).exists(), name

@@ -1,5 +1,9 @@
 # PaperPull
 
+This fork tracks upstream and carries additional providers plus optional shared-browser
+and environment support. See [FORK.md](FORK.md) for differences and validation status.
+
+
 ![Version](https://img.shields.io/github/v/tag/rheeloaded/paperpull?sort=semver&label=version&color=blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 ![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -12,11 +16,17 @@ of clicking through each site by hand.
 
 Runs on **Windows and macOS** (and Linux), with the same commands on each.
 
-Twenty-two providers are supported today, all built on the same pattern:
+Twenty-eight providers are supported today, all built on the same pattern:
 
 | App | Provider | Documents | Notes |
 |-----|----------|-----------|-------|
 | [`aafmaa`](apps/aafmaa) | AAFMAA (Armed Forces Mutual) | Annual statements, policy docs | ASP.NET WebForms; one documented disclosure dialog |
+| [`brightstart`](apps/brightstart) | Bright Start 529 | Statements, confirmations, tax forms, plan inserts | Ported; fresh live pilot pending |
+| [`capitalone`](apps/capitalone) | Capital One | Bank and card statements, tax forms, letters | Ported; fresh live pilot pending |
+| [`huntington`](apps/huntington) | Huntington Bank | Statements, escrow analyses, tax forms, correspondence | Ported; fresh live pilot pending |
+| [`schwab`](apps/schwab) | Charles Schwab | Statements, tax forms, letters, trade confirmations | Ported; fresh live pilot pending |
+| [`stp`](apps/stp) | STP / BluePrint | Investment notices, statements, tax and fund documents | Ported; fresh live pilot pending |
+| [`usbank`](apps/usbank) | U.S. Bank | Credit-card statements | Ported; fresh live pilot pending |
 | [`ally`](apps/ally) | Ally Bank | Account statements, tax forms | JSON API; same-dated statements named from the PDF |
 | [`amazon`](apps/amazon) | Amazon | Order invoices (full history) | Per-year order pagination |
 | [`amex`](apps/amex) | American Express | Statements, Year-End Summary | Click-nav SPA; in-memory session |

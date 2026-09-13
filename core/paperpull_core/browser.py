@@ -199,6 +199,8 @@ def browser_candidates(prefer_real: bool = False, mode: str = AUTO):
     # to fail the same way, since the usual cause is the port rather than the
     # build.
     bundled = [(CHROMIUM, p) for p in _bundled_chromium()[:1]]
+    if mode == "installed-chrome":
+        return sorted(real, key=lambda item: item[0] != CHROME)
     if mode == INSTALLED:
         return real
     if mode == BUNDLED:
@@ -344,11 +346,11 @@ def open_signin_browser(profile_dir, port: str, url: str,
     """
     candidates = browser_candidates(prefer_real=prefer_real, mode=mode)
 
-    if not candidates and allow_fetch and mode != INSTALLED:
+    if not candidates and allow_fetch and mode not in (INSTALLED, "installed-chrome"):
         if fetch_bundled_chromium():
             candidates = browser_candidates(prefer_real=prefer_real, mode=mode)
     if not candidates:
-        if mode == INSTALLED:
+        if mode in (INSTALLED, "installed-chrome"):
             print("No Chrome, Edge or other Chromium-based browser was found,")
             print("and this app is set to use only a browser you already have.")
         else:
@@ -363,7 +365,7 @@ def open_signin_browser(profile_dir, port: str, url: str,
     # browser can be present and refuse a debugging port every time, and until
     # this point that ended the run with no way forward even though a download
     # would have fixed it.
-    if allow_fetch and mode != INSTALLED and not bundled_chromium_present():
+    if allow_fetch and mode not in (INSTALLED, "installed-chrome") and not bundled_chromium_present():
         print()
         print("None of the browsers on this computer would open a debugging")
         print("port, which is what this tool needs to attach to.")

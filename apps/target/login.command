@@ -3,6 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 PY=.venv/bin/python
+if [ -x "../../.venv/bin/python" ]; then PY=../../.venv/bin/python; fi
 
 # No argument = your account. An argument = that named account, e.g.
 #   ./run_all.command spouse   ->  --config config.spouse.json
@@ -16,4 +17,4 @@ fi
 
 
 
-"$PY" target_receipts.py --login $CFG
+"$PY" target_receipts.py --open-browser $CFG

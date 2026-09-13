@@ -1,5 +1,7 @@
 @echo off
 cd /d "%~dp0"
+set "PP_PY=.venv\Scripts\python.exe"
+if exist "..\..\.venv\Scripts\python.exe" set "PP_PY=..\..\.venv\Scripts\python.exe"
 rem  login.bat          -> your account (config.json, port 9228)
 rem  login.bat spouse   -> config.spouse.json (own folders, profile, port)
 if "%~1"=="" (set "CFG=") else (set "CFG=--config config.%~1.json")
@@ -18,6 +20,6 @@ echo READ-ONLY: this tool only downloads your bill PDFs.
 echo It NEVER pays a bill, sets up AutoPay, adds or changes a bank account
 echo or card, starts or stops service, or changes any setting.
 echo.
-.venv\Scripts\python.exe dominion_docs.py --open-browser %CFG%
+"%PP_PY%" dominion_docs.py --open-browser %CFG%
 echo.
 pause
