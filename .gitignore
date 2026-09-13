@@ -92,3 +92,6 @@ status.html
 
 # build output
 dist/
+
+# Panel-observed run history is private
+.panel-runs.json*
