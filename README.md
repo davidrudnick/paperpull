@@ -16,7 +16,7 @@ of clicking through each site by hand.
 
 Runs on **Windows and macOS** (and Linux), with the same commands on each.
 
-Twenty-eight providers are supported today, all built on the same pattern:
+Twenty-nine providers are supported today, all built on the same pattern:
 
 | App | Provider | Documents | Notes |
 |-----|----------|-----------|-------|
@@ -39,12 +39,15 @@ Twenty-eight providers are supported today, all built on the same pattern:
 | [`mtb`](apps/mtb) | M&T Bank | Mortgage statements, escrow, 1098 | Own online banking; you list, app expands all years |
 | [`navyfederal`](apps/navyfederal) | Navy Federal CU | Account statements | Per-account accordions; blob-tab PDFs |
 | [`paylocity`](apps/paylocity) | Paylocity | **Pay statements** | Escher JSON API, enqueue-poll-fetch PDF; nothing clicked |
+| [`pge`](apps/pge) | PG&E (Pacific Gas and Electric) | Billing statements | Salesforce portal with a paginated history, fresh live pilot pending |
 | [`redcard`](apps/redcard) | Target RedCard / Circle Card (TD Bank) | Billing statements | Statements table; per-year switcher |
 | [`robinhood`](apps/robinhood) | Robinhood | Account statements, tax docs | "View More" pagination |
+| [`schwab`](apps/schwab) | Charles Schwab | Statements, tax forms, letters, trade confirmations | Ported; fresh live pilot pending |
 | [`target`](apps/target) | Target | Receipts (Online + In-Store) | Print-capture |
 | [`tmobile`](apps/tmobile) | T-Mobile | Bill statements | Bill-history page; detailed-bill download |
 | [`ukg`](apps/ukg) | UKG Pro / UltiPro | **Pay statements** | Per-employer tenant; JSON-API, nothing clicked |
 | [`usaa`](apps/usaa) | USAA | Statements | JSON-API enumeration |
+| [`usbank`](apps/usbank) | U.S. Bank | Credit-card statements | Ported; fresh live pilot pending |
 | [`verizon`](apps/verizon) | Verizon (Fios) | Bill statements | Real Edge (bot block); dropdown + CDP download |
 | [`walmart`](apps/walmart) | Walmart | Receipts | Hardened against bot detection |
 | [`wealthfront`](apps/wealthfront) | Wealthfront | Statements, tax docs | |
@@ -243,7 +246,16 @@ hold accounts with, so it belongs with your installs and is gitignored here.
 
 ## Windows and macOS
 
-One download covers both. Every app ships two launchers with the same names
+**Windows has an installer.** Every release on the
+[Releases page](https://github.com/rheeloaded/paperpull/releases) carries
+`PaperPull-<version>-setup.exe`, which installs the control panel, the shared
+core and every provider into your own user folder with no admin rights and no
+Python on the machine, and `PaperPull-<version>.zip`, the same folder for
+anyone who would rather not run an installer. The current release is a beta
+and the installer is not yet code-signed, so Windows shows its SmartScreen
+prompt the first time. See [Code signing policy](#code-signing-policy) below.
+
+For a checkout of this repository, one download covers both. Every app ships two launchers with the same names
 and the same behaviour — `.bat` for Windows, `.command` for macOS and Linux —
 so the instructions in this README and in each app's own README apply
 wherever you are:
@@ -305,7 +317,9 @@ Every contribution keeps the **read-only, local, no-credentials** design — see
 
 ## Status & roadmap
 
-- ✅ All **seventeen** apps work and are in regular use.
+- ✅ All **twenty-six** apps pass their tests. Twenty-two are in regular use by
+  the author, and the four contributed most recently are marked in the table
+  above as awaiting a fresh live pilot.
 - 🔜 **More providers:** community-driven — see [PROVIDERS.md](PROVIDERS.md).
 - 🔜 **Scheduled/assisted runs:** a monthly "nudge + sweep" (e.g. the 1st) that
   opens the login browsers and then runs discover + resume across every app once
@@ -318,6 +332,22 @@ Every contribution keeps the **read-only, local, no-credentials** design — see
   folders, routing, CSV columns and config defaults — and keeps only its
   orchestrator and its `*_site.py`. `tools/check_installs.py` reports whether
   your installs have drifted from the repo.
+
+## Code signing policy
+
+The Windows installer is built from a tagged commit of this repository by the
+[Windows package](.github/workflows/build-windows.yml) workflow on a clean
+GitHub runner, never from a developer's machine, and the checksums of what it
+produced are published beside it. Signing goes through that same workflow so a
+signed binary can only ever come from code that is in this repository.
+
+This program does not transfer any information to other networked systems
+unless specifically requested by the user. The only sites it contacts are the
+providers you sign in to yourself, and the only download it ever offers is a
+browser, at sign-in, with your agreement.
+
+Team roles, current status and the full policy are in
+[docs/code-signing.md](docs/code-signing.md).
 
 ## Support
 

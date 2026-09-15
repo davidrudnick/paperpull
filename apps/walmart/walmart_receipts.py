@@ -23,7 +23,7 @@ Authentication is always manual (--login opens a browser and waits for you).
 """
 from __future__ import annotations
 
-from paperpull_core.run_reporting import finish_run
+from paperpull_core.run_reporting import report_run_result
 
 import argparse
 import logging
@@ -993,7 +993,14 @@ class App:
         # A plain list of exactly the files downloaded THIS run (all new, since
         # already-downloaded items are skipped). Handy for knowing what to
         # import into paperless-ngx, and safe to ignore/delete afterward.
-        finish_run(self.paths.root, s)
+        atomic_write_text(
+            self.paths.root / "new-this-run.txt",
+            f"# {len(new_files)} file(s) downloaded on this run "
+            f"({s['ended']}):\n" + "\n".join(sorted(new_files)) + "\n")
+        if new_files:
+            print(f"\n{len(new_files)} NEW file(s) downloaded this run "
+                  f"(listed in new-this-run.txt).")
+        report_run_result(s)
 
 
 # ---------------------------------------------------------------------------

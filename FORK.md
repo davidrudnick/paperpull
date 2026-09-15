@@ -1,7 +1,7 @@
 # Maintaining this fork
 
-Based on upstream main `cc0633a96e01fc95ff1b2857ee236dac524db850`, which includes
-changes after v0.18.0. Upstream's rewritten history is the foundation; the old
+Based on upstream main `d2d5a4a`, which includes
+v0.19.0-beta.1 changes. Upstream's rewritten history is the foundation; the old
 local history is not merged into this branch.
 
 ## Included changes

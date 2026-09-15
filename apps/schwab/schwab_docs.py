@@ -1,7 +1,7 @@
 """Charles Schwab statements, tax forms, letters and trade confirmations."""
 from __future__ import annotations
 
-from paperpull_core.run_reporting import finish_run
+from paperpull_core.run_reporting import report_run_result
 
 import argparse
 import logging
@@ -744,7 +744,14 @@ class App:
 
 
 
-        finish_run(self.paths.root, s)
+        atomic_write_text(
+            self.paths.root / "new-this-run.txt",
+            f"# {len(new_files)} file(s) downloaded on this run "
+            f"({s['ended']}):\n" + "\n".join(sorted(new_files)) + "\n")
+        if new_files:
+            print(f"\n{len(new_files)} NEW file(s) downloaded this run "
+                  f"(listed in new-this-run.txt).")
+        report_run_result(s)
 
 
 def build_parser() -> argparse.ArgumentParser:

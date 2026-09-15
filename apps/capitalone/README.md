@@ -3,6 +3,13 @@
 This provider reads documents from a browser where you sign in yourself.
 Passwords and verification codes are never handled by the downloader.
 
+It clicks nothing except the "continue session" dialog. Documents are found
+by calling Capital One's own document search, which takes its parameters as
+a POST body holding only document categories, a date range and an account
+reference. That is a query, not a change to anything. The PDF itself is
+fetched with a plain GET, and every request is checked inside the browser
+against Capital One's own hosts before it is sent.
+
 ## Setup and use
 
 1. Run `setup.command` (macOS) or `setup.bat` (Windows).
@@ -16,9 +23,15 @@ Deleting a downloaded file does not reset that history.
 
 ## Validation status
 
-Ported to the current upstream core. Automated checks are recorded with the
-change; a fresh supervised live pilot of this port is still required.
-No claim is made that all account variants or document types have been tested.
+Uses upstream core, a provider-local Python environment, and a separate browser
+profile on port 9247. It does not require shared-browser or panel extensions.
+
+A supervised statement run of the same provider logic in a downstream
+installation downloaded a new statement and skipped completed history without
+reported errors. That installation used a shared browser; the standalone
+configuration is covered by automated tests but has not had a fresh live pilot.
+Tax forms, letters, and all account variants have not been comprehensively
+verified. Start with a small pilot and inspect its results.
 
 ## Maintenance
 

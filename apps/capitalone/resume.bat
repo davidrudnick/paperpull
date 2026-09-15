@@ -3,7 +3,7 @@ cd /d "%~dp0"
 set "PP_PY=.venv\Scripts\python.exe"
 if exist "..\..\.venv\Scripts\python.exe" set "PP_PY=..\..\.venv\Scripts\python.exe"
 if "%~1"=="" (set "CFG=") else (set "CFG=--config config.%~1.json")
-echo Resuming M^&T Bank document download.
+echo Resuming Capital One document download.
 if not "%~1"=="" echo Account: %~1
 echo Make sure that account's signed-in browser is still OPEN.
 "%PP_PY%" capitalone_docs.py --resume %CFG%

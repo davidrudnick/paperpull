@@ -33,12 +33,15 @@ telecoms, payroll systems, and retailers real people actually use.
 | [`mtb`](apps/mtb) | M&T Bank | Mortgage statements, escrow, 1098 | Mortgage servicing |
 | [`navyfederal`](apps/navyfederal) | Navy Federal CU | Account statements | Bank / credit union |
 | [`paylocity`](apps/paylocity) | Paylocity | Pay statements | Payroll |
+| [`pge`](apps/pge) | PG&E (Pacific Gas and Electric) | Billing statements | Utility |
 | [`redcard`](apps/redcard) | Target RedCard / Circle Card (TD Bank) | Billing statements | Card |
 | [`robinhood`](apps/robinhood) | Robinhood | Account statements, tax docs | Brokerage |
+| [`schwab`](apps/schwab) | Charles Schwab | Statements, tax forms, letters, trade confirmations | Brokerage |
 | [`target`](apps/target) | Target | Receipts (online + in-store) | Retail |
 | [`tmobile`](apps/tmobile) | T-Mobile | Bill statements | Telecom |
 | [`ukg`](apps/ukg) | UKG Pro / UltiPro | Pay statements | Payroll |
 | [`usaa`](apps/usaa) | USAA | Statements | Bank / insurance |
+| [`usbank`](apps/usbank) | U.S. Bank | Credit-card statements | Card |
 | [`verizon`](apps/verizon) | Verizon (Fios) | Bill statements | Telecom |
 | [`walmart`](apps/walmart) | Walmart | Receipts | Retail |
 | [`wealthfront`](apps/wealthfront) | Wealthfront | Statements, tax docs | Brokerage |
