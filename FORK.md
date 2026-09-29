@@ -8,11 +8,12 @@ foundation; the old local history is not merged into this branch.
 
 - Three additional providers: Bright Start, Huntington and STP / BluePrint.
   Capital One, Schwab and U.S. Bank, first ported here, now ship upstream and
-  come from there. The three fork-only apps run on the current core and pass
-  their own tests, but they predate upstream's every-app conventions (failure
-  files, run journals, diagnose surveys, filename templates, account keys), so
-  upstream's cross-app tests in `core/tests` fail for them until they are
-  brought onto that pattern. Fresh supervised pilots remain pending.
+  come from there. The three fork-only apps follow upstream's every-app
+  pattern as of 0.39.2 (failure files, run journals, Diagnose surveys,
+  filename templates, stable document numbering, account keys) and pass
+  upstream's cross-app tests. Their CDP ports are 9401 (Bright Start), 9402
+  (Huntington) and 9403 (STP), clear of upstream's sequential range and its
+  +10 second-account ports. Fresh supervised pilots remain pending.
 - Upstream's provider setup, add/remove controls, archive freshness and gap
   detection. The old display-only hiding preferences are intentionally retired.
 - A Last panel run column showing successful Run All / Resume exits per
