@@ -15,20 +15,21 @@ from urllib.request import Request, urlopen
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from urllib.parse import urlsplit, urljoin
+from paperpull_core.urls import is_safe_url as _host_allows
+from paperpull_core.dates import checked as _checked_date
 from paperpull_core.controls import SETTINGS_CONTROL_RE, AUTH_CONTROL_RE
 
 ALLOWED_HOSTS = {'www.brightstart-529.com', 'cdn.unite529.com'}
 
 
 def is_safe_url(url: str) -> bool:
-    try:
-        parts = urlsplit(url or "")
-        return (parts.scheme == "https" and parts.hostname in ALLOWED_HOSTS
-                and parts.port in (None, 443) and not parts.username
-                and not parts.password)
-    except (TypeError, ValueError):
-        return False
+    """True only for an https URL on exactly one of this provider's own
+    hosts, never a subdomain of one.
+
+    The check itself lives in the core, so all of them answer the same way.
+    This app keeps the hosts and its refusal to follow subdomains, which is
+    how it has always behaved."""
+    return _host_allows(url, ALLOWED_HOSTS, subdomains=False)
 
 
 log = logging.getLogger("brightstart_docs.site")
@@ -141,7 +142,7 @@ DATE_PATTERNS = [
                 r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
                 r"Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+(\d{4})", re.I), "mdY"),
     (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"), "mdy_slash"),
-    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "iso"),
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?!\d)"), "iso"),
 ]
 _MONTHS = {m: i + 1 for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
@@ -157,7 +158,7 @@ def statement_period(date: str) -> str:
     return f"Q{q} {date[:4]}" if q else ""
 
 
-def parse_date(text: str) -> Optional[str]:
+def _parse_date_from_page(text: str) -> Optional[str]:
     if not text:
         return None
     for pattern, kind in DATE_PATTERNS:
@@ -174,6 +175,15 @@ def parse_date(text: str) -> Optional[str]:
         except (KeyError, ValueError):
             continue
     return None
+
+
+def parse_date(text):
+    """The date this provider's page is showing, as YYYY-MM-DD.
+
+    The reading is above, unchanged. This only refuses to believe a result
+    that names a day which does not exist, because a reference number is
+    shaped like a date and used to be taken for one."""
+    return _checked_date(_parse_date_from_page(text), None)
 
 
 def looks_signed_out(page) -> bool:
