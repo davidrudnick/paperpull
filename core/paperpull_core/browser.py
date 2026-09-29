@@ -5,7 +5,7 @@ own debugging port, using this app's own profile directory, which *you* then
 sign into. The tool later attaches to it over the DevTools protocol. Nothing
 here automates a login.
 
-Two flavours:
+Two flavors:
 
 * Most providers are happy with the Chromium that Playwright installs.
 * A few (Walmart, Verizon) run bot protection that fingerprints that build as
@@ -83,25 +83,75 @@ def _bundled_chromium() -> List[str]:
     return sorted(found, key=build_number, reverse=True)
 
 
+# Where each brand registers its executable under App Paths, and the
+# folder it installs to under a Program Files or LOCALAPPDATA root. The
+# registry is consulted first because it is the browser's own statement of
+# where it is, and the folders are the fallback for an install that did not
+# register (a portable copy, or a per-user install on a locked-down machine).
+_WINDOWS_BROWSERS = [
+    (EDGE, "msedge.exe", ("Microsoft", "Edge", "Application", "msedge.exe")),
+    (CHROME, "chrome.exe", ("Google", "Chrome", "Application", "chrome.exe")),
+    (BRAVE, "brave.exe", ("BraveSoftware", "Brave-Browser", "Application", "brave.exe")),
+    (VIVALDI, "vivaldi.exe", ("Vivaldi", "Application", "vivaldi.exe")),
+    (OPERA, "opera.exe", ("Programs", "Opera", "opera.exe")),
+]
+_APP_PATHS = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"
+
+
+def _registry_browsers() -> List[Tuple[str, str]]:
+    """Every browser Windows knows about, from App Paths, in preference order.
+
+    Read from the 64-bit registry view on purpose. This process can be an
+    x64 build running under emulation on an ARM64 machine, where the
+    default view is the emulated one and a native ARM64 Chrome would be
+    invisible from it. HKCU first, since a per-user install is the one the
+    person chose most recently, then HKLM.
+    """
+    try:
+        import winreg
+    except ImportError:
+        return []
+    out: List[Tuple[str, str]] = []
+    for name, exe, _ in _WINDOWS_BROWSERS:
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                with winreg.OpenKey(hive, _APP_PATHS + "\\" + exe, 0,
+                                    winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
+                    value, _kind = winreg.QueryValueEx(key, "")
+            except OSError:
+                continue
+            path = os.path.expandvars(str(value or "")).strip().strip('"')
+            if path:
+                out.append((name, path))
+    return out
+
+
+def _windows_roots() -> List[str]:
+    """The folders a browser installs under, most authoritative first.
+
+    ProgramW6432 is the real 64-bit Program Files even when this process is
+    32-bit or emulated, which is when PROGRAMFILES quietly points at the
+    (x86) folder instead. Empty and repeated values are dropped.
+    """
+    roots = []
+    for var in ("ProgramW6432", "PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+        value = os.environ.get(var, "")
+        if value and value not in roots:
+            roots.append(value)
+    return roots
+
+
 def _real_browsers() -> List[Tuple[str, str]]:
     """Installed Edge/Chrome, most-preferred first, as (name, path)."""
     if sys.platform == "win32":
-        pf = os.environ.get("PROGRAMFILES", "")
-        pfx = os.environ.get("PROGRAMFILES(X86)", "")
-        local = os.environ.get("LOCALAPPDATA", "")
-        candidates = [
-            (EDGE, os.path.join(pfx, "Microsoft", "Edge", "Application", "msedge.exe")),
-            (EDGE, os.path.join(pf, "Microsoft", "Edge", "Application", "msedge.exe")),
-            (CHROME, os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe")),
-            (CHROME, os.path.join(pfx, "Google", "Chrome", "Application", "chrome.exe")),
-            (CHROME, os.path.join(local, "Google", "Chrome", "Application", "chrome.exe")),
-            (BRAVE, os.path.join(pf, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")),
-            (BRAVE, os.path.join(pfx, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")),
-            (BRAVE, os.path.join(local, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")),
-            (VIVALDI, os.path.join(local, "Vivaldi", "Application", "vivaldi.exe")),
-            (VIVALDI, os.path.join(pf, "Vivaldi", "Application", "vivaldi.exe")),
-            (OPERA, os.path.join(local, "Programs", "Opera", "opera.exe")),
-        ]
+        candidates = list(_registry_browsers())
+        for root in _windows_roots():
+            for name, _exe, parts in _WINDOWS_BROWSERS:
+                candidates.append((name, os.path.join(root, *parts)))
+        # Preference order is by brand, not by where it was found, so a
+        # Brave in the registry does not outrank an Edge found by folder.
+        rank = {name: i for i, (name, _e, _p) in enumerate(_WINDOWS_BROWSERS)}
+        candidates.sort(key=lambda c: rank.get(c[0], len(rank)))
     elif sys.platform == "darwin":
         home = Path.home()
         candidates = [
@@ -142,7 +192,7 @@ def find_browser(prefer_real: bool = False) -> Tuple[Optional[str], Optional[str
     """Return (name, executable path) for the browser to sign in with.
 
     With prefer_real, an installed Edge/Chrome wins over the bundled Chromium
-    — that is what gets past the providers whose bot protection rejects the
+   , that is what gets past the providers whose bot protection rejects the
     Playwright build.
     """
     real = _real_browsers()
@@ -248,6 +298,49 @@ def can_ask() -> bool:
         return bool(sys.stdin) and sys.stdin.isatty()
     except (ValueError, AttributeError):
         return False
+
+
+def ask_or_none(prompt: str):
+    """The answer to a question, or None when there is nobody to ask.
+
+    `can_ask` is the right test under the control panel, which closes a
+    pipe so that stdin reports itself as not a terminal. It is not enough
+    on its own, because a Windows process handed DEVNULL reports
+    `isatty()` as True and then raises at the first read. Both are
+    handled here so that no caller has to remember either.
+    """
+    if not can_ask():
+        return None
+    try:
+        return input(prompt)
+    except (EOFError, KeyboardInterrupt, OSError):
+        return None
+
+
+def pause_for_sign_in(say=print, next_step: str = "Discover or Pilot") -> bool:
+    """Hold while the person signs in, when there is somebody to hold for.
+
+    Returns True if it waited, False if there was nobody to ask.
+
+    An app that opens its own browser used to call input() here. Under the
+    control panel, which closes an app's stdin so a stray prompt cannot
+    hang a run, that read end-of-file and took the whole process down with
+    it, which closed the browser window the person was about to sign in
+    to. A tester saw the window open and vanish, and the output said "No
+    interactive console available", which is true and is about the wrong
+    thing (#48).
+
+    Nothing is granted by not waiting. The browser stays open and the
+    person is told what to press next.
+    """
+    if ask_or_none("Press Enter here AFTER you have finished signing in... ") is not None:
+        return True
+    say("")
+    say("Sign in to the browser window that just opened, and leave it open.")
+    say("Then come back to the panel and press %s." % next_step)
+    say("Your sign-in is kept in this app's own browser profile, so it is")
+    say("only asked for again when the provider expires it.")
+    return False
 
 
 def browser_install_command():
@@ -423,12 +516,22 @@ def _launch(exe: str, name: str, profile_dir, port: str,
     if sys.platform == "win32":
         detach["creationflags"] = (subprocess.CREATE_NEW_PROCESS_GROUP
                                    | subprocess.DETACHED_PROCESS)
-    subprocess.Popen([exe, f"--user-data-dir={profile_path}",
-                      f"--remote-debugging-port={port}", "--no-first-run",
-                      "--no-default-browser-check", url],
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, start_new_session=True,
-                     **detach)
+    try:
+        subprocess.Popen([exe, f"--user-data-dir={profile_path}",
+                          f"--remote-debugging-port={port}", "--no-first-run",
+                          "--no-default-browser-check", url],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True,
+                         **detach)
+    except OSError as e:
+        # This function's answer is a browser name or None, and the caller
+        # tries the next candidate on None. Letting the launch raise instead
+        # ended the whole sign-in step with a traceback while another browser
+        # sat there ready. The file was checked for before this, so a failure
+        # here is the interesting kind: security software holding an unsigned
+        # binary, a permission, an update swapping the executable out.
+        print("\n%s would not start (%s)." % (name, e))
+        return None
 
     # Launching is not the same as listening, and the difference used to be
     # invisible. When Edge or Chrome is ALREADY running, a new launch can hand
@@ -452,25 +555,39 @@ def _launch(exe: str, name: str, profile_dir, port: str,
         return None
 
     # Said once the window is actually up, because that is when somebody is
-    # looking at a browser they recognise which knows none of their accounts.
+    # looking at a browser they recognize which knows none of their accounts.
     print()
     print(profile_note(name))
     return name
 
 
 def wait_for_debug_port(port: str, timeout: float = 20.0) -> bool:
-    """True once the browser's debugging port accepts a connection.
+    """True once DevTools answers on the browser's debugging port.
 
     Checked on 127.0.0.1 rather than "localhost": the browser binds IPv4 only,
     while "localhost" can resolve to ::1 first and be refused.
+
+    A port that accepts a connection is not the same as DevTools being ready.
+    The browser opens the listener early and answers /json/version only once
+    the protocol is up, and an attach in that gap fails with a message that
+    blames the wrong thing. So readiness is the endpoint the attach itself
+    will use, answering with the websocket address it will connect to.
     """
-    import socket
+    import json
     import time
+    import urllib.request
+    try:
+        url = "http://127.0.0.1:%d/json/version" % int(port)
+    except (TypeError, ValueError):
+        return False
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            with socket.create_connection(("127.0.0.1", int(port)), timeout=1):
+            with urllib.request.urlopen(url, timeout=2) as r:
+                info = json.loads(r.read().decode("utf-8", "replace"))
+            if isinstance(info, dict) and info.get("webSocketDebuggerUrl"):
                 return True
         except (OSError, ValueError):
-            time.sleep(0.5)
+            pass
+        time.sleep(0.5)
     return False

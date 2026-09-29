@@ -39,8 +39,6 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
-from urllib.parse import urlparse
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -87,6 +85,13 @@ SECURITY_CHALLENGE_MARKERS = [
     "challenge question", "security question",
 ]
 
+# Throttling, which every other app watches for and these two did not. A
+# payroll site is the worst place to keep asking after it has said no.
+RATE_LIMIT_MARKERS = [
+    "too many requests", "rate limit", "try again later",
+    "temporarily unavailable", "http error 429", "unusual traffic",
+]
+
 # Controls that must NEVER be activated. A payroll site can redirect where
 # someone's wages land, so this matters more here than on any retail site.
 FORBIDDEN_CONTROL_RE = re.compile(
@@ -126,23 +131,12 @@ def is_safe_control(name: str) -> bool:
 
 
 def is_safe_url(url: str) -> bool:
-    """On Paylocity's own host, by parsed comparison, never a string prefix.
+    """True only for an https URL on one of this provider's own hosts.
 
-    The UKG app's tenant guard was once walked through by both a suffix host
-    and a userinfo host because it compared with startswith. Parse and
-    compare, and refuse embedded credentials outright.
-    """
-    try:
-        got = urlparse(url or "")
-    except ValueError:
-        return False
-    if got.scheme != "https" or not got.hostname:
-        return False
-    if (got.hostname or "").lower() not in ALLOWED_HOSTS:
-        return False
-    if got.username or got.password:
-        return False
-    return True
+    The check itself lives in the core, so all of them answer the same way.
+    This app keeps the hosts, which is the part that really is its own."""
+    from paperpull_core.urls import is_safe_url as _host_allows
+    return _host_allows(url, ALLOWED_HOSTS)
 
 
 def looks_signed_out(page) -> bool:
@@ -163,13 +157,24 @@ def looks_signed_out(page) -> bool:
 
 
 def detect_security_challenge(page) -> Optional[str]:
+    """Names the passcode prompt or the throttling notice on screen, or
+    None. The title counts as well as the body, because a site that has
+    stopped answering often says so there first."""
+    try:
+        title = (page.title() or "").lower()
+    except Exception:
+        title = ""
     try:
         body = page.locator("body").inner_text(timeout=5000).lower()
     except Exception:
-        return None
+        body = ""
+    hay = title + "\n" + body
     for marker in SECURITY_CHALLENGE_MARKERS:
-        if marker in body:
+        if marker in hay:
             return f"Sign-in verification step detected: '{marker}'"
+    for marker in RATE_LIMIT_MARKERS:
+        if marker in hay:
+            return f"Possible rate limiting detected: '{marker}'"
     return None
 
 
@@ -204,7 +209,7 @@ def goto_documents(page) -> bool:
 
     This is a navigation, not a guess and not a click. The confirmed URL for
     Pay History is loaded directly, which both gives the user something
-    recognisable to look at and, more importantly, sets the login.paylocity.com
+    recognizable to look at and, more importantly, sets the login.paylocity.com
     session the JSON endpoints require. Without it the endpoints answer 200
     with an empty body, which reads as an empty account rather than an error.
     """
@@ -327,13 +332,6 @@ def collect_documents(page) -> List[RawDoc]:
     return docs
 
 
-def goto_documents_or_none(page):
-    """Kept for the orchestrator's discovery call; the API works on its own,
-    but loading the pay page first keeps the session warm and gives the user
-    something recognisable to look at."""
-    return goto_documents(page)
-
-
 def download_document(page, pdf_url: str, out_path) -> bool:
     """Save one pay statement's PDF via enqueue -> poll -> fetch.
 
@@ -341,7 +339,6 @@ def download_document(page, pdf_url: str, out_path) -> bool:
     is clicked; every step is a GET with the session cookie.
     """
     from pathlib import Path
-    import time as _time
     try:
         company_id, employee_id, history_id = (pdf_url or "").split("|", 2)
     except ValueError:

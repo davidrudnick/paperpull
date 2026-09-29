@@ -1,0 +1,24 @@
+{
+  "owner": "",
+  "owner_in_filename": false,
+  "output_dir": ".",
+  "profile_dir": "./fairfaxwater-browser-profile",
+  "cdp_url": "http://127.0.0.1:9250",
+  "document_types": [
+    "Statement"
+  ],
+  "default_start_date": "",
+  "min_pdf_bytes": 2000,
+  "max_path_length": 240,
+  "delay_min_seconds": 2.5,
+  "delay_max_seconds": 5.0,
+  "pilot_count": 5,
+  "browser": "auto",
+  "//refuse": "On. It was off, because every bill prints the PREVIOUS",
+  "//refuse2": "bill's date beside its own, so July passed a check for April.",
+  "//refuse3": "The check compares rows now, and July also carries its own",
+  "//refuse4": "amount while April does not, so July wins and April is",
+  "//refuse5": "refused. Measured over 4 bills: none refused, 10 of 12",
+  "//refuse6": "neighbour swaps caught.",
+  "refuse_wrong_documents": true
+}

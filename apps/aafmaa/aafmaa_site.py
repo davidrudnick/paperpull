@@ -1,4 +1,4 @@
-"""ALL AAFMAA (Armed Forces Mutual) selectors, URLs, and page behaviour live here.
+"""ALL AAFMAA (Armed Forces Mutual) selectors, URLs, and page behavior live here.
 
 When AAFMAA changes its site, repair this file only.
 
@@ -72,14 +72,15 @@ THE TABLE, confirmed 2026-08-22
 """
 from __future__ import annotations
 
-import base64
 import html as _html
-import json
 import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+from paperpull_core.dates import last_day as _last_day
+from paperpull_core.dates import checked as _checked_date
 
 log = logging.getLogger("aafmaa_docs.site")
 
@@ -90,7 +91,7 @@ URLS = {
     # and the sign-in page. That means a URL alone cannot tell you whether you
     # are signed in - looks_signed_out() checks for the password field instead.
     "login": f"{BASE}/",
-    # CONFIRMED against a signed-in account, 2026-08-22. The app is organised
+    # CONFIRMED against a signed-in account, 2026-08-22. The app is organized
     # as /<Area>/default.aspx, so the documents area is /Documents/default.aspx
     # and the landing page is /Home/default.aspx.
     "home_app": f"{BASE}/Home/default.aspx",
@@ -185,7 +186,7 @@ DATE_PATTERNS = [
                 r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
                 r"Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+(\d{4})", re.I), "mdY"),
     (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"), "mdy_slash"),
-    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "iso"),
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?!\d)"), "iso"),
 ]
 _MONTHS = {m: i + 1 for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
@@ -195,17 +196,9 @@ MONTH_YEAR_RE = re.compile(
     r"\s+(\d{4})", re.I)
 QUARTER_RE = re.compile(r"\bQ([1-4])\s*[' ]?\s*(\d{4})\b", re.I)
 YEAR_RE = re.compile(r"\b(19|20)(\d{2})\b")
-_LAST_DAY = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30,
-             7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31}
 
 
-def _last_day(year: int, month: int) -> int:
-    if month == 2 and (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
-        return 29
-    return _LAST_DAY[month]
-
-
-def parse_date(text: str) -> Optional[str]:
+def _parse_date_from_page(text: str) -> Optional[str]:
     if not text:
         return None
     for pattern, kind in DATE_PATTERNS:
@@ -222,6 +215,15 @@ def parse_date(text: str) -> Optional[str]:
         except (KeyError, ValueError):
             continue
     return None
+
+
+def parse_date(text):
+    """The date this provider's page is showing, as YYYY-MM-DD.
+
+    The reading is below, unchanged. This only refuses to believe a result
+    that names a day which does not exist, because a reference number is
+    shaped like a date and used to be taken for one."""
+    return _checked_date(_parse_date_from_page(text), None)
 
 
 def parse_period_date(text: str) -> Tuple[Optional[str], str]:
@@ -477,7 +479,7 @@ def collect_all_pages(page, max_pages: int = 20) -> List[dict]:
         log.warning("refusing to collect: this is not the documents page (%s)",
                     (page.url or "")[:80])
         return []
-    # Normalise to page 1 before reading anything. Discovery reads whatever
+    # Normalize to page 1 before reading anything. Discovery reads whatever
     # page the table was left showing, and a previous walk leaves it on the
     # LAST page - a run then read page 3 twice, never saw page 1, and five
     # documents quietly went missing. If "1" is not a link, this is already
@@ -565,31 +567,11 @@ def collect_documents(page) -> List[RawDoc]:
     return docs
 
 
-_BLOB_FETCH_JS = r"""async () => {
-    const f = document.querySelector("iframe[src^='blob:']");
-    if (!f || !f.src) return null;
-    const r = await fetch(f.src);
-    const buf = new Uint8Array(await r.arrayBuffer());
-    let s = ''; for (let i = 0; i < buf.length; i++) s += String.fromCharCode(buf[i]);
-    return btoa(s);
-}"""
-
-
 # The membership boilerplate AAFMAA shows every member, above their own
 # documents: a president's letter, a benefits brochure, the privacy policy.
-# Recognised by WHERE they live rather than by what they are called, so a
+# Recognized by WHERE they live rather than by what they are called, so a
 # rename cannot start them being archived as somebody's insurance records.
 RESOURCE_PDF_RE = re.compile(r"/Resources/PDFFiles/", re.I)
-
-# Each row's links, as (label, href, postback target). WebForms writes the
-# target inside a WebForm_PostBackOptions(...) call or a plain __doPostBack,
-# so the href is javascript and the name inside it is the real handle.
-_ROW_LINKS_JS = r"""e => [...e.querySelectorAll('a')].map(a => {
-  const href = a.getAttribute('href') || '';
-  const m = href.match(/PostBackOptions\("([^"]+)"/) ||
-            href.match(/__doPostBack\('([^']+)'/);
-  return [(a.innerText || '').trim(), m ? '' : href, m ? m[1] : ''];
-}).slice(0, 8)"""
 
 
 def _iso_from_us_date(text: str) -> str:
@@ -710,14 +692,11 @@ def collect_document_index(page) -> List[dict]:
     # positional assumption and nothing said so. If rows existed and none
     # survived, say what one looked like.
     if not docs and (skipped_no_date or skipped_no_view):
-        log.warning("table had %d row(s) with no recognisable date and %d "
+        log.warning("table had %d row(s) with no recognizable date and %d "
                     "with no View control; first unmatched row's cells: %r",
                     skipped_no_date, skipped_no_view,
                     [c[:30] for c in (sample_cells or [])])
     return docs
-
-def document_deeplink(document_id: str, document_date: str) -> str:
-    return f"{BASE}/my/documents?documentId={document_id}&documentDate={document_date}"
 
 
 # ---------------------------------------------------------------------------
@@ -1008,15 +987,9 @@ ALLOWED_HOSTS = {'aafmaa.com'}
 
 
 def is_safe_url(url: str) -> bool:
-    """True only for an https URL on one of this provider's own hosts."""
-    from urllib.parse import urlparse
-    try:
-        got = urlparse(url or "")
-    except ValueError:
-        return False
-    if got.scheme != "https" or not got.hostname:
-        return False
-    if got.username or got.password:
-        return False
-    host = got.hostname.lower().rstrip(".")
-    return any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS)
+    """True only for an https URL on one of this provider's own hosts.
+
+    The check itself lives in the core, so all of them answer the same way.
+    This app keeps the hosts, which is the part that really is its own."""
+    from paperpull_core.urls import is_safe_url as _host_allows
+    return _host_allows(url, ALLOWED_HOSTS)

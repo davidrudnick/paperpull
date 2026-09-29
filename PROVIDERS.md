@@ -1,49 +1,80 @@
 # Providers
 
-The running list of what PaperPull supports — and what people want next. The
+The running list of what PaperPull supports, and what people want next. The
 goal is an ever-growing set covering the banks, cards, brokerages, utilities,
 telecoms, payroll systems, and retailers real people actually use.
 
 - **Have an account with a provider that's not here?** You're the ideal person
-  to add it — see **[Adding a provider](docs/adding-a-provider.md)**.
+  to add it, see **[Adding a provider](docs/adding-a-provider.md)**.
 - **Want a provider but can't build it?** Open a
   [provider request](https://github.com/rheeloaded/paperpull/issues/new/choose)
   so someone with that account can pick it up.
 
-## Supported (28)
+## Supported (42, plus sixteen built and waiting for a tester)
 
 | App | Provider | Documents | Category |
 |-----|----------|-----------|----------|
+| [`affirm`](apps/affirm) | Affirm | Loan agreements, one per loan; Affirm Money and Card statements not covered | Lender |
+| [`adp`](apps/adp) | ADP Workforce Now | Pay statements and W-2s, everything the statement services list, nothing clicked | Payroll |
 | [`aafmaa`](apps/aafmaa) | AAFMAA (Armed Forces Mutual) | Annual statements, policy & insurance documents | Insurance / member association |
 | [`brightstart`](apps/brightstart) | Bright Start 529 | Statements, confirmations, tax forms, plan inserts | 529 plan |
 | [`capitalone`](apps/capitalone) | Capital One | Bank and card statements, tax forms, letters | Bank / card |
 | [`huntington`](apps/huntington) | Huntington Bank | Statements, escrow analyses, tax forms, correspondence | Bank |
-| [`schwab`](apps/schwab) | Charles Schwab | Statements, tax forms, letters, trade confirmations | Brokerage |
 | [`stp`](apps/stp) | STP / BluePrint | Investment notices, statements, tax and fund documents | Investments |
-| [`usbank`](apps/usbank) | U.S. Bank | Credit-card statements | Card |
 | [`ally`](apps/ally) | Ally Bank | Account statements, tax forms | Bank |
+| [`att`](apps/att) | AT&T (Mobility, Fiber, Internet) | Monthly bills. Confirmed by @watling777 on two accounts, wireless and internet, with a full run on each (#26) | Telecom |
 | [`amazon`](apps/amazon) | Amazon | Order invoices (full history) | Retail |
+| [`amfam`](apps/amfam) | American Family Insurance | Billing statements, policy documents, declarations, ID cards. UNTESTED, built without an account. Have one? Run Diagnose and attach the file to issue #45. Being tested by @jpfieber | Insurance |
 | [`amex`](apps/amex) | American Express | Statements, year-end summary | Card |
-| [`anthem`](apps/anthem) | Anthem BCBS (Elevance, 14 Blue states) | EOBs, member/plan documents (all coverage years), digital ID cards, secure-message letters; tRPC API, nothing clicked | Health insurance (PHI) |
+| [`anthem`](apps/anthem) | Anthem BCBS (Elevance, 14 Blue states) | EOBs, member/plan documents (all coverage years), digital ID cards, secure-message letters; tRPC API, nothing clicked. Contributed by @riordan | Health insurance (PHI) |
+| [`apple`](apps/apple) | Apple (App Store and Apple Store) | Receipts for everything paid for, App Store subscriptions such as Apple One and iCloud+, in-app purchases anywhere in Family Sharing and paid apps, each saved from Apple's own emailed receipt with free downloads skipped, and Apple Store orders, each order's invoice saved and a canceled one recorded without a receipt. Built and run on the maintainer's own account | Retail |
+| [`applecard`](apps/applecard) | Apple Card and Apple Savings | Apple Card statements, Savings statements, tax forms. Confirmed by @watling777, whose Pilot and full run saved every statement and the 1099-INT forms (#52) | Card / savings |
+| [`bestbuy`](apps/bestbuy) | Best Buy | Receipts for online orders, orders placed in a store and store purchases, and returns, each purchase's details page saved as the receipt, back to 2015. Built on the maintainer's own account, 35 purchases found and all 35 saved. Best Buy's bot protection stops answering if asked too quickly, so it is paced, and a blocked run says to wait an hour | Retail |
 | [`chase`](apps/chase) | Chase (credit cards) | Card statements | Card |
+| [`citi`](apps/citi) | Citi (credit cards) | Monthly card statements, the roughly two years the site lists online; statements API, nothing clicked | Card |
+| [`costco`](apps/costco) | Costco Wholesale | Receipts, in-warehouse, gas, pharmacy and costco.com orders. Written from a member's recording and run against their account. One membership so far, a second Pilot is welcome, see issue #47 | Retail |
 | [`discovercard`](apps/discovercard) | Discover (credit cards) | Card statements | Card, **moving to Capital One** ([#13](https://github.com/rheeloaded/paperpull/issues/13)) |
 | [`dominion`](apps/dominion) | Dominion Energy (VA) | Billing statements | Utility |
+| [`ebay`](apps/ebay) | eBay | Order receipts, the order-details page rendered to PDF, ten years of purchase history, nothing clicked. Confirmed by @jpfieber on issue #44, every order back to 2017 | Retail |
+| [`etrade`](apps/etrade) | E*TRADE | Statements, trade confirmations, tax forms. Confirmed by @watling777, whose Pilot and full run saved every statement (#36). No tax form seen yet, his account has none | Brokerage |
+| [`ezpassva`](apps/ezpassva) | E-ZPass Virginia | Monthly and quarterly statements, the roughly one year of each the portal keeps online, so run it at least once a year. Built on the maintainer's own account | Tolls |
+| [`fairfaxwater`](apps/fairfaxwater) | Fairfax Water (VA) | Water bills, the last year's, from the FW Customer portal | Utility |
+| [`fedex`](apps/fedex) | FedEx (Billing Online) | Shipping invoices. UNTESTED, built from a login not connected to Billing Online, no invoice seen. Use it? Run Diagnose and attach the file to issue #54 | Shipping |
+| [`fidelity`](apps/fidelity) | Fidelity Investments | Statements, trade confirmations, tax forms; Document Access Hub API, nothing clicked | Brokerage |
 | [`gap`](apps/gap) | Gap Inc. (Gap, Old Navy, Banana Republic, Athleta) | Order receipts | Retail |
+| [`homedepot`](apps/homedepot) | The Home Depot | Receipts for online orders, and store purchases where the history lists them, Home Depot's own print receipt with model and store SKU numbers. Home Depot keeps two years online, so run it every few months. Built on the maintainer's own account, 8 orders found and 6 receipts saved | Retail |
+| [`kroger`](apps/kroger) | Kroger (Pick 'n Save, Metro Market, Fred Meyer, Ralphs and the rest) | Receipts, in-store, fuel, pickup and delivery. UNTESTED, built against an account with no purchases. Have one? Run Diagnose and attach the file to issue #41. Being tested by @jpfieber | Retail |
+| [`lowes`](apps/lowes) | Lowe's Home Improvement | Receipts for store purchases and online orders, and returns, from the purchase history back to 2023, each purchase's details page saved as the receipt. Built on the maintainer's own account, 41 purchases found and 6 saved in the first pilot | Retail |
+| [`github`](apps/github) | GitHub | Payment receipts for Pro, Copilot, Actions, Sponsors and anything else GitHub charged. Confirmed by @jpfieber on issue #43, whose Pilot saved five of the twenty-three receipts his account holds | Software services |
+| [`golden1`](apps/golden1) | Golden 1 Credit Union | Statements, tax forms. Built without an account and run against @watling777's (#35). A Pilot saved five checking statements, with a repair being tested for the older ones and the credit card | Credit union |
+| [`meijer`](apps/meijer) | Meijer | Order receipts, and in-store digital receipts where mPerks lists them. UNTESTED, built without an account. Have one? Run Diagnose and attach the file to issue #42. Being tested by @jpfieber | Retail |
+| [`myecp`](apps/myecp) | MILITARY STAR card (MyECP, Exchange Credit Program) | Monthly card statements, the three and a half years MyECP keeps online. Built on the maintainer's own account, 25 statements | Card |
 | [`mypay`](apps/mypay) | DFAS myPay | eRAS, CRSC, 1099-R, 1095 | Government pay system; JSON API, nothing clicked |
 | [`mtb`](apps/mtb) | M&T Bank | Mortgage statements, escrow, 1098 | Mortgage servicing |
+| [`netbenefits`](apps/netbenefits) | Fidelity NetBenefits | Quarterly or monthly 401(k) statements, made to order and rendered; nothing clicked | Workplace retirement plan |
 | [`navyfederal`](apps/navyfederal) | Navy Federal CU | Account statements | Bank / credit union |
+| [`newrez`](apps/newrez) | Newrez | Mortgage statements, escrow analysis, 1098. Built without an account and run against @watling777's (#38). This year's statements and the 1098s download, with a repair being tested for earlier years | Mortgage servicer |
+| [`paypal`](apps/paypal) | PayPal | Monthly statements, the three years the site keeps online. Tax forms not yet covered. Built on the maintainer's own account, 25 statements | Payments |
 | [`paylocity`](apps/paylocity) | Paylocity | Pay statements | Payroll |
-| [`pge`](apps/pge) | PG&E (Pacific Gas and Electric) | Billing statements | Utility |
+| [`pge`](apps/pge) | PG&E (Pacific Gas and Electric) | Billing statements. Contributed by @appchamp. Repaired in 0.37.1 and confirmed on a real account by @watling777 (#33) | Utility |
 | [`redcard`](apps/redcard) | Target RedCard / Circle Card (TD Bank) | Billing statements | Card |
 | [`robinhood`](apps/robinhood) | Robinhood | Account statements, tax docs | Brokerage |
+| [`sba`](apps/sba) | SBA (MySBA Loan Portal) | Loan statements, 1098. UNTESTED, built without an account. Have an SBA loan? Run Diagnose and attach the file to issue #28 | Government loan servicing |
 | [`schwab`](apps/schwab) | Charles Schwab | Statements, tax forms, letters, trade confirmations | Brokerage |
+| [`smud`](apps/smud) | SMUD (Sacramento Municipal Utility District) | Monthly bills. Confirmed by @watling777 on issue #34, whose Pilot took the newest five and whose full run took the rest of the history | Utility |
+| [`stripe`](apps/stripe) | Stripe (merchant Dashboard) | Fee invoices and tax forms such as the 1099-K. UNTESTED, built on an account with no documents yet. Have some? Run Diagnose and attach the file to issue #53 | Payments |
+| [`statefarm`](apps/statefarm) | State Farm | Bills, renewal notices, ID cards, receipts, policy documents. UNTESTED, built without an account. Have a policy? Run Diagnose and attach the file to issue #37. Being tested by @watling777 | Insurance |
 | [`target`](apps/target) | Target | Receipts (online + in-store) | Retail |
+| [`tsp`](apps/tsp) | Thrift Savings Plan (tsp.gov) | Participant statements, 1099-R | Federal retirement (government system) |
 | [`tmobile`](apps/tmobile) | T-Mobile | Bill statements | Telecom |
 | [`ukg`](apps/ukg) | UKG Pro / UltiPro | Pay statements | Payroll |
+| [`ups`](apps/ups) | UPS (Billing Center) | Shipping invoices from billing.ups.com, every invoice My Invoices lists. Built on the maintainer's own account | Shipping |
 | [`usaa`](apps/usaa) | USAA | Statements | Bank / insurance |
 | [`usbank`](apps/usbank) | U.S. Bank | Credit-card statements | Card |
 | [`verizon`](apps/verizon) | Verizon (Fios) | Bill statements | Telecom |
+| [`verizonmobile`](apps/verizonmobile) | Verizon Mobile (wireless) | Monthly bills. UNTESTED, built without an account. Have one? Run Diagnose and attach the file to issue #31 | Telecom |
 | [`walmart`](apps/walmart) | Walmart | Receipts | Retail |
+| [`wellsfargo`](apps/wellsfargo) | Wells Fargo | Account statements, tax documents. UNTESTED, built without an account. Have one? Run Diagnose and attach the file to issue #27 | Bank / card / mortgage |
 | [`wealthfront`](apps/wealthfront) | Wealthfront | Statements, tax docs | Brokerage |
 
 ## Requested / in progress
@@ -52,26 +83,28 @@ Anyone can add a row (via a [provider request](https://github.com/rheeloaded/pap
 or a PR). Claim one by commenting on its issue so two people don't build the
 same thing. When it merges, it moves up to **Supported**.
 
-New to this? Look for the **`good first provider`** label — those are easy sites
+New to this? Look for the **`good first provider`** label, those are easy sites
 (a plain statements table + a real download link). See
 [Which provider is a good first build?](docs/adding-a-provider.md#which-provider-is-a-good-first-build)
 
 | Provider | Category | Requested by | Status |
 |----------|----------|--------------|--------|
-| _(none yet — add yours)_ | | | |
+| _(none yet, add yours)_ | | | |
 
 Status legend: **requested** → **claimed** (someone's building it) →
-**in review** (PR open) → merged (moves to Supported).
+**in review** (PR open) → merged (moves to Supported). **Built, needs a
+tester** is an app written without an account, which anyone who holds one
+can finish by running its Diagnose button and attaching the result.
 
 ## How the list grows
 
-1. **Request** — someone opens a provider request (or adds a row here).
-2. **Claim** — a contributor with that account comments to claim it.
-3. **Build** — follow [Adding a provider](docs/adding-a-provider.md): clone the
+1. **Request**, someone opens a provider request (or adds a row here).
+2. **Claim**, a contributor with that account comments to claim it.
+3. **Build**, follow [Adding a provider](docs/adding-a-provider.md): clone the
    closest app, rewrite its `*_site.py`, keep it read-only, test the pilot.
-4. **PR** — open a pull request (the template has a safety + privacy checklist).
-5. **Merge** — it graduates to the Supported table above.
+4. **PR**, open a pull request (the template has a safety + privacy checklist).
+5. **Merge**, it graduates to the Supported table above.
 
 Providers change their sites over time; a supported app that breaks is a
-**patch** fix to that app's `*_site.py`, not a rebuild — see
+**patch** fix to that app's `*_site.py`, not a rebuild, see
 [CONTRIBUTING.md](CONTRIBUTING.md).

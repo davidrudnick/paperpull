@@ -25,7 +25,7 @@ verification loop or a temporary lock on a real account, so nothing here ever
 touches Chase from an obviously-automated browser.
 
 WHAT THE LIVE PROBE ESTABLISHED (2026-08-18):
-  * The document centre is
+  * The document center is
       secure.chase.com/web/auth/dashboard#/dashboard/documents/myDocs/index
     reached by clicking the app's own nav; document types are URL segments
     (documentType=STATEMENTS / TAX_DOCUMENTS / YEAR_END_STATEMENTS).
@@ -72,6 +72,11 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from paperpull_core import controls as _controls
+from paperpull_core.urls import is_safe_url as _host_allows
+from paperpull_core.controls import click_next_page as _click_next_page
+from paperpull_core.dates import last_day as _last_day
+from paperpull_core.capture import fetch_as_b64 as _fetch_as_b64
+from paperpull_core.dates import checked as _checked_date
 
 log = logging.getLogger("chase_docs.site")
 
@@ -174,26 +179,6 @@ FALLBACK = {
     "show_more": "button, a",
 }
 
-# A row control that opens/downloads one statement.
-#
-# Chase's is a plain <button> with NO aria-label and NO href, whose text is just
-# the statement's name ("Statement", or "<name> Trust Statement"). The words
-# "Download statement for:" sit in a separate visually-hidden element in the
-# row, not on the button - so keying on aria-label or on the word "Download"
-# finds nothing (confirmed live 2026-08-18). The specific selectors are kept
-# for other layouts and tried first; ROW_CONTROL_FALLBACK_SEL then considers
-# any button/link in the row. Either way the element's own accessible name
-# must clear is_safe_control(), so widening the net does not widen what may
-# be clicked.
-ROW_CONTROL_SEL = ("a[href$='.pdf'], a[download], "
-                   "a[aria-label*='statement' i], a[aria-label*='download' i], "
-                   "button[aria-label*='statement' i], button[aria-label*='download' i], "
-                   "button[aria-label*='view' i], "
-                   "a:has-text('Download'), a:has-text('View'), "
-                   "button:has-text('Download'), button:has-text('View'), "
-                   "button:has-text('PDF'), a:has-text('PDF')")
-ROW_CONTROL_FALLBACK_SEL = "button, a"
-
 # ---------------------------------------------------------------------------
 # Date parsing (shared with the other projects)
 # ---------------------------------------------------------------------------
@@ -202,7 +187,7 @@ DATE_PATTERNS = [
                 r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
                 r"Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+(\d{4})", re.I), "mdY"),
     (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"), "mdy_slash"),
-    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "iso"),
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?!\d)"), "iso"),
 ]
 _MONTHS = {m: i + 1 for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
@@ -212,17 +197,9 @@ MONTH_YEAR_RE = re.compile(
     r"\s+(\d{4})", re.I)
 QUARTER_RE = re.compile(r"\bQ([1-4])\s*[' ]?\s*(\d{4})\b", re.I)
 YEAR_RE = re.compile(r"\b(19|20)(\d{2})\b")
-_LAST_DAY = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30,
-             7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31}
 
 
-def _last_day(year: int, month: int) -> int:
-    if month == 2 and (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
-        return 29
-    return _LAST_DAY[month]
-
-
-def parse_date(text: str) -> Optional[str]:
+def _parse_date_from_page(text: str) -> Optional[str]:
     if not text:
         return None
     for pattern, kind in DATE_PATTERNS:
@@ -239,6 +216,15 @@ def parse_date(text: str) -> Optional[str]:
         except (KeyError, ValueError):
             continue
     return None
+
+
+def parse_date(text):
+    """The date this provider's page is showing, as YYYY-MM-DD.
+
+    The reading is below, unchanged. This only refuses to believe a result
+    that names a day which does not exist, because a reference number is
+    shaped like a date and used to be taken for one."""
+    return _checked_date(_parse_date_from_page(text), None)
 
 
 def parse_period_date(text: str) -> Tuple[Optional[str], str]:
@@ -486,21 +472,15 @@ def expand_all(page) -> None:
 
 
 def next_page(page) -> bool:
-    try:
-        loc = page.locator(FALLBACK["next_page"])
-        if loc.count() > 0 and loc.first.is_visible() and loc.first.is_enabled():
-            label = (loc.first.inner_text(timeout=800) or "") + \
-                (loc.first.get_attribute("aria-label") or "")
-            # An unreadable control is not clicked. Previously an empty label
-            # passed the blocklist trivially and was clicked anyway.
-            if not label.strip() or FORBIDDEN_CONTROL_RE.search(label):
-                return False
-            loc.first.click()
-            page.wait_for_timeout(2500)
-            return True
-    except Exception:
-        pass
-    return False
+    """One page forward, through a control that says it pages forward.
+
+    Judged by an allowlist in the core rather than by FORBIDDEN_CONTROL_RE,
+    because that blocklist refuses the word "next". Correctly, since "Next"
+    is also what a wizard's commit button says, and fatally here, because it
+    meant this could never page forward at all and the run reported success
+    having seen only the first page.
+    """
+    return _click_next_page(page, FALLBACK["next_page"])
 
 
 @dataclass
@@ -588,7 +568,7 @@ def collect_documents(page) -> List[RawDoc]:
 # widget whose first <select> is an account list (id/allytmfn "fromAccount") -
 # indistinguishable from a statements account picker by its options alone. The
 # 2026-08-18 probe found exactly that and tried to set it. Selecting an option
-# in a transfer form is not read-only behaviour even when nothing is submitted,
+# in a transfer form is not read-only behavior even when nothing is submitted,
 # so every <select> is identity-checked before it is read OR written.
 # ---------------------------------------------------------------------------
 _ACCOUNT_HINT_RE = re.compile(
@@ -630,7 +610,6 @@ def _safe_selects(page, limit: int = 12):
 
 def describe_selects(page, limit: int = 12):
     return _controls.describe_selects(page, FORBIDDEN_CONTROL_RE, limit=limit)
-
 
 
 def account_select(page):
@@ -747,13 +726,6 @@ def chase_collect(page) -> List[dict]:
 # session cookies). Whichever wins, the bytes are checked for %PDF- before the
 # file is written.
 # ---------------------------------------------------------------------------
-_FETCH_AS_B64 = r"""async (u) => {
-    const r = await fetch(u, {credentials: 'include'});
-    if (!r.ok) return null;
-    const buf = new Uint8Array(await r.arrayBuffer());
-    let s = ''; for (let i = 0; i < buf.length; i++) s += String.fromCharCode(buf[i]);
-    return btoa(s);
-}"""
 
 
 def _write_if_pdf(data: bytes, out_path: Path) -> bool:
@@ -761,33 +733,6 @@ def _write_if_pdf(data: bytes, out_path: Path) -> bool:
         return False
     out_path.write_bytes(data)
     return True
-
-
-def _row_download_control(row):
-    """The row's own download control, or None.
-
-    Tries the explicit selectors first, then any button/link in the row -
-    Chase's control announces itself only through its text. In BOTH passes the
-    control's own accessible name must pass is_safe_control(), so a money
-    control in a row could never be picked up by the wider pass.
-    """
-    for sel in (ROW_CONTROL_SEL, ROW_CONTROL_FALLBACK_SEL):
-        try:
-            ctrl = row.locator(sel)
-            n = min(ctrl.count(), 8)
-        except Exception:
-            continue
-        for j in range(n):
-            c = ctrl.nth(j)
-            try:
-                label = ((c.inner_text(timeout=500) or "") + " " +
-                         (c.get_attribute("aria-label") or "") + " " +
-                         (c.get_attribute("href") or ""))
-            except Exception:
-                continue
-            if is_safe_control(label):
-                return c
-    return None
 
 
 _MONTHS_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -800,7 +745,7 @@ def row_label_re(date: str, account: str, action: str = "Saves document"):
     Chase names these fully - "Aug 09, 2026 Statement SAPPHIRE RESERVE
     (...1234) Saves document" - so a row is identified by date AND card AND
     action, with nothing left to position or inference. Two rows cannot be
-    confused the way Ally's identically-labelled statements could.
+    confused the way Ally's identically-labeled statements could.
     """
     month = _MONTHS_ABBR[int(date[5:7]) - 1]
     day = date[8:10]
@@ -926,8 +871,8 @@ def _click_row_and_capture(page, ctx, account: str, date: str,
         if not url.startswith("blob:") and not is_safe_url(url):
             log.error("refusing to fetch a document from outside Chase")
             return False
-        b64 = page.evaluate(_FETCH_AS_B64, url) if url.startswith("blob:") \
-            else new_page.evaluate(_FETCH_AS_B64, url)
+        b64 = _fetch_as_b64(page, url) if url.startswith("blob:") \
+            else _fetch_as_b64(new_page, url)
         if b64:
             ok = _write_if_pdf(base64.b64decode(b64), out_path)
             if ok:
@@ -1087,7 +1032,7 @@ def probe_api(page, seconds: int = 25) -> List[dict]:
 
 
 # ===========================================================================
-# Discovery: the document centre, driven exactly as a person drives it
+# Discovery: the document center, driven exactly as a person drives it
 #
 # Confirmed live 2026-08-18. The page is one accordion per card. Expanding one
 # makes the SPA call
@@ -1285,7 +1230,7 @@ def read_card_rows(page, label: str) -> List[dict]:
     Attribution comes from the ROW, not from correlating an async API reply.
     Each row names itself completely - date, type and card - so a document can
     only ever be filed under the card printed on it. Correlating responses
-    instead put a card's statements under its neighbour: collapsing, expanding
+    instead put a card's statements under its neighbor: collapsing, expanding
     and changing the year all fire the same endpoint, so "the next reply" is
     not reliably the reply to this click.
     """
@@ -1321,7 +1266,7 @@ def read_card_rows(page, label: str) -> List[dict]:
     return out
 
 
-def chase_collect_via_api(page) -> List[dict]:
+def chase_collect_via_api(page, keep=None) -> List[dict]:
     """Every document Chase still shows: each card, each year in the picker.
 
     Driven through the page's own accordions and year picker; this app issues
@@ -1332,6 +1277,14 @@ def chase_collect_via_api(page) -> List[dict]:
         log.info("documents page not reachable")
         return []
     years = year_options(page) or [""]
+    if keep is not None:
+        # A scoped run does not select years it will throw away. Each
+        # selection is a round trip, and the picker goes back a decade.
+        wanted = [y for y in years if keep(y)]
+        if len(wanted) < len(years):
+            log.info("Chase: skipping %d year(s) outside the run's scope",
+                     len(years) - len(wanted))
+        years = wanted or [""]
     cards = [label for _el, label in card_accordions(page)]
     if not cards:
         log.info("no card accordions found")
@@ -1369,15 +1322,8 @@ ALLOWED_HOSTS = {'chase.com'}
 
 
 def is_safe_url(url: str) -> bool:
-    """True only for an https URL on one of this provider's own hosts."""
-    from urllib.parse import urlparse
-    try:
-        got = urlparse(url or "")
-    except ValueError:
-        return False
-    if got.scheme != "https" or not got.hostname:
-        return False
-    if got.username or got.password:
-        return False
-    host = got.hostname.lower().rstrip(".")
-    return any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS)
+    """True only for an https URL on one of this provider's own hosts.
+
+    The check itself lives in the core, so all of them answer the same way.
+    This app keeps the hosts, which is the part that really is its own."""
+    return _host_allows(url, ALLOWED_HOSTS)

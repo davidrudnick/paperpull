@@ -54,6 +54,9 @@ def templates(tmp_path, monkeypatch):
         # the double-click launchers a checkout ships
         (d / "setup.bat").write_text("@echo off", encoding="utf-8")
         (d / "login.command").write_text("#!/bin/bash", encoding="utf-8")
+        # and the one that also runs on the packaged app's own Python
+        (d / "review_names.bat").write_text("@echo off", encoding="utf-8")
+        (d / "review_names.command").write_text("#!/bin/bash", encoding="utf-8")
     monkeypatch.setattr(app_module, "_templates_root", lambda: root)
     monkeypatch.setattr(app_module, "_provider_notes",
                         lambda: {"bank": {"documents": "Statements", "category": "Bank"}})
@@ -156,6 +159,28 @@ def test_the_packaged_app_leaves_the_launchers_out(templates, settings, tmp_path
     assert not (d / "login.command").exists()
     assert (d / "bank_docs.py").exists(), "the code itself must still be copied"
     assert (d / "config.json").exists()
+
+
+def test_the_packaged_app_ships_review_names_which_finds_its_python(templates, settings, tmp_path,
+                                                                    monkeypatch):
+    """review_names asks for one name at a time, so it cannot run in the
+    panel, and it looks for the app's own Python when the folder has no
+    setup file. So it is the one double-click file a packaged install gets,
+    in a new install and, on the next refresh, in one made before it
+    shipped."""
+    monkeypatch.setattr(app_module, "_is_packaged", lambda: True)
+    home = tmp_path / "home"
+    _create({"root": str(home), "providers": ["bank"]})
+    d = home / "Bank Statements"
+    assert (d / "review_names.bat").is_file()
+    assert (d / "review_names.command").is_file()
+
+    (d / "review_names.bat").unlink()
+    (d / "review_names.command").unlink()
+    changed = app_module.refresh_install_code(d, templates / "bank")
+    assert "review_names.bat" in changed and "review_names.command" in changed
+    assert (d / "review_names.command").is_file()
+    assert not (d / "setup.bat").exists() and not (d / "login.command").exists()
 
 
 def test_an_existing_install_is_never_overwritten(templates, settings, tmp_path):
@@ -279,7 +304,7 @@ def test_only_a_discovered_app_can_be_removed(templates, settings, tmp_path):
     home = tmp_path / "home"
     _create({"root": str(home), "providers": ["bank"]})
     (tmp_path / "elsewhere").mkdir()
-    for name in ("../elsewhere", "..\elsewhere", "elsewhere", "Removed", ""):
+    for name in ("../elsewhere", r"..\elsewhere", "elsewhere", "Removed", ""):
         with pytest.raises(fastapi.HTTPException) as e:
             _remove({"app": name})
         assert e.value.status_code == 404, name
@@ -297,3 +322,187 @@ def test_template_copy_excludes_private_variants_and_downloads(templates, settin
     _create({"root": str(home), "providers": ["bank"]})
     for name in private:
         assert not (home / "Bank Statements" / name).exists(), name
+
+
+# -- an upgrade reaches the installs that already exist ----------------------
+
+def test_an_upgrade_refreshes_the_code_in_an_existing_install(templates, settings, tmp_path):
+    """The first AT&T tester installed the release with the repair, clicked
+    Diagnose, and sent back a survey from the old code. An install was
+    copied once and never touched again."""
+    home = tmp_path / "home"
+    _create({"root": str(home), "providers": ["bank"]})
+    d = home / "Bank Statements"
+    marker = d / "progress.json"
+    marker.write_text('{"id:1": {"downloaded_ok": true}}', encoding="utf-8")
+    (d / "config.json").write_text('{"owner": "Me", "cdp_url": "http://127.0.0.1:9299"}', encoding="utf-8")
+    (templates / "bank" / "bank_site.py").write_text("# site, repaired\n", encoding="utf-8")
+    (templates / "bank" / "document_rules.json").write_text('{"statement_rules": []}', encoding="utf-8")
+
+    app_module._REFRESHED_ROOTS.clear()
+    got = app_module.refresh_installs()
+    # The config entry is the settings top-up. This install's config was
+    # written by hand above and never had output_dir, which the template
+    # ships, so the refresh adds it rather than leaving the install a
+    # setting behind.
+    assert got == {"Bank Statements": ["bank_site.py", "document_rules.json",
+                                       "config.json: output_dir"]}
+    assert (d / "bank_site.py").read_text(encoding="utf-8") == "# site, repaired\n"
+    assert (d / "document_rules.json").is_file(), "a file the template gained is added"
+    assert "id:1" in marker.read_text(encoding="utf-8"), "history is not code"
+    assert '"Me"' in (d / "config.json").read_text(encoding="utf-8"), "config is not code"
+    backups = list((d / "Backups").glob("code-*/bank_site.py"))
+    assert len(backups) == 1 and backups[0].read_text(encoding="utf-8") == "# site\n"
+
+    app_module._REFRESHED_ROOTS.clear()
+    assert app_module.refresh_installs() == {}, "a second look changes nothing"
+
+
+def test_a_renamed_install_folder_still_gets_its_providers_code(templates, settings, tmp_path):
+    home = tmp_path / "home"
+    _create({"root": str(home), "providers": ["bank"]})
+    (home / "Bank Statements").rename(home / "My Bank")
+    (templates / "bank" / "bank_site.py").write_text("# v2\n", encoding="utf-8")
+    app_module._REFRESHED_ROOTS.clear()
+    assert app_module.refresh_installs() == {"My Bank": ["bank_site.py"]}
+
+
+def test_a_running_install_is_left_alone_until_it_finishes(templates, settings, tmp_path):
+    home = tmp_path / "home"
+    _create({"root": str(home), "providers": ["bank"]})
+    (templates / "bank" / "bank_site.py").write_text("# v2\n", encoding="utf-8")
+    app_module._RUNNING.add("Bank Statements")
+    try:
+        app_module._REFRESHED_ROOTS.clear()
+        assert app_module.refresh_installs() == {}
+    finally:
+        app_module._RUNNING.discard("Bank Statements")
+    assert (home / "Bank Statements" / "bank_site.py").read_text(encoding="utf-8") == "# site\n"
+
+
+def test_the_apps_root_that_is_the_templates_folder_is_not_refreshed_onto_itself(templates, settings, monkeypatch):
+    monkeypatch.setattr(app_module, "apps_root", lambda: templates)
+    app_module._REFRESHED_ROOTS.clear()
+    assert app_module.refresh_installs() == {}
+    assert not (templates / "bank" / "Backups").exists()
+
+
+# -- a second person, from the panel -----------------------------------------
+
+def _account(body):
+    return asyncio.run(app_module.api_account(_Req(body)))
+
+
+def test_a_second_account_is_made_from_the_panel(templates, settings, tmp_path):
+    """A packaged Mac install has no paperpull on the PATH, so the terminal
+    command for a second account was out of reach (issue #39). The panel
+    makes it, and the Account dropdown then lists it."""
+    home = tmp_path / "home"
+    _create({"root": str(home), "providers": ["shop"]})
+    got = _account({"app": "Shop Receipts", "label": "Spouse", "owner": "Jane Doe"})
+    assert got["account"] == "spouse" and got["config"] == "config.spouse.json"
+    inst = home / "Shop Receipts"
+    cfg = json.loads((inst / "config.spouse.json").read_text(encoding="utf-8"))
+    assert cfg["owner"] == "Jane Doe"
+    assert cfg["cdp_url"] == "http://127.0.0.1:9309"          # its own port
+    assert (home / "Shop Receipts - spouse").is_dir()          # its own folder, beside the first
+    assert app_module.discover_apps()["Shop Receipts"]["accounts"] == ["primary", "spouse"]
+    cmd = app_module._build_cmd(app_module.discover_apps()["Shop Receipts"], "spouse", "pilot")
+    assert cmd[-2:] == ["--config", "config.spouse.json"]
+
+
+def test_a_bad_label_or_a_repeat_is_refused_and_nothing_is_overwritten(templates, settings, tmp_path):
+    home = tmp_path / "home"
+    _create({"root": str(home), "providers": ["shop"]})
+    _account({"app": "Shop Receipts", "label": "spouse"})
+    before = (home / "Shop Receipts" / "config.spouse.json").read_text(encoding="utf-8")
+    for bad in ("", "primary", "../x", "a b", "spouse"):
+        with pytest.raises(fastapi.HTTPException) as e:
+            _account({"app": "Shop Receipts", "label": bad})
+        assert e.value.status_code in (400, 409), bad
+    with pytest.raises(fastapi.HTTPException) as e:
+        _account({"app": "Nope", "label": "spouse"})
+    assert e.value.status_code == 404
+    assert (home / "Shop Receipts" / "config.spouse.json").read_text(encoding="utf-8") == before
+
+
+# -- settings a provider gained after the install was made --------------------
+
+def _install(tmp_path, template, current):
+    import json as _json
+    d = tmp_path / "Provider"
+    d.mkdir()
+    (d / "config.example.json").write_text(_json.dumps(template), encoding="utf-8")
+    (d / "config.json").write_text(_json.dumps(current), encoding="utf-8")
+    return d
+
+
+def test_a_setting_the_template_gained_reaches_an_existing_install(tmp_path):
+    """config.example.json becomes config.json once, when an install is
+    made, and was never looked at again. That is how the wrong-document
+    check came to be on in six templates and off in all six installs."""
+    import json as _json
+
+    d = _install(tmp_path, {"a": 1, "refuse_wrong_documents": True}, {"a": 1})
+    added = app_module.ensure_settings(d, "t")
+    assert added == ["refuse_wrong_documents"]
+    assert _json.loads((d / "config.json").read_text(encoding="utf-8"))[
+        "refuse_wrong_documents"] is True
+
+
+def test_a_value_somebody_changed_is_never_overwritten(tmp_path):
+    """The whole reason this adds rather than merges. An install's port,
+    its output folder and its owner are theirs."""
+    import json as _json
+
+    d = _install(tmp_path, {"cdp_url": "http://127.0.0.1:9250", "new": 2},
+                 {"cdp_url": "http://127.0.0.1:9999"})
+    app_module.ensure_settings(d, "t")
+    cfg = _json.loads((d / "config.json").read_text(encoding="utf-8"))
+    assert cfg["cdp_url"] == "http://127.0.0.1:9999"
+    assert cfg["new"] == 2
+
+
+def test_a_setting_the_template_dropped_is_left_alone(tmp_path):
+    """An old setting still doing a job is not this function's business."""
+    import json as _json
+
+    d = _install(tmp_path, {"a": 1}, {"a": 1, "retired": "keep me"})
+    app_module.ensure_settings(d, "t")
+    assert _json.loads((d / "config.json").read_text(encoding="utf-8"))[
+        "retired"] == "keep me"
+
+
+def test_the_comment_keys_are_not_copied_in(tmp_path):
+    """A template explains itself with // keys. A live config does not
+    need the essay."""
+    d = _install(tmp_path, {"//why": "because", "real": 1}, {})
+    assert app_module.ensure_settings(d, "t") == ["real"]
+
+
+def test_nothing_to_add_writes_nothing(tmp_path):
+    d = _install(tmp_path, {"a": 1}, {"a": 2})
+    before = (d / "config.json").read_bytes()
+    assert app_module.ensure_settings(d, "t") == []
+    assert (d / "config.json").read_bytes() == before
+
+
+def test_the_config_is_backed_up_before_it_is_written(tmp_path):
+    d = _install(tmp_path, {"a": 1, "b": 2}, {"a": 1})
+    app_module.ensure_settings(d, "stamp")
+    assert (d / "Backups" / "code-stamp" / "config.json").is_file()
+
+
+def test_an_install_with_no_config_is_left_alone(tmp_path):
+    d = tmp_path / "Provider"
+    d.mkdir()
+    assert app_module.ensure_settings(d, "t") == []
+
+
+def test_a_config_that_will_not_parse_is_never_rewritten(tmp_path):
+    d = tmp_path / "Provider"
+    d.mkdir()
+    (d / "config.example.json").write_text('{"a": 1}', encoding="utf-8")
+    (d / "config.json").write_text("{ this is not json", encoding="utf-8")
+    assert app_module.ensure_settings(d, "t") == []
+    assert (d / "config.json").read_text(encoding="utf-8") == "{ this is not json"

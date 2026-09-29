@@ -18,20 +18,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from urllib.parse import urlsplit, urljoin
 from paperpull_core.controls import SETTINGS_CONTROL_RE, AUTH_CONTROL_RE
+from paperpull_core.urls import is_safe_url as _host_allows
+from paperpull_core.controls import click_next_page as _click_next_page
+from paperpull_core.dates import last_day as _last_day
+from paperpull_core.dates import checked as _checked_date
 
 ALLOWED_HOSTS = {'www.usbank.com', 'onlinebanking.usbank.com'}
 
 
 def is_safe_url(url: str) -> bool:
-    try:
-        parts = urlsplit(url or "")
-        return (parts.scheme == "https" and parts.hostname in ALLOWED_HOSTS
-                and parts.port in (None, 443) and not parts.username
-                and not parts.password)
-    except (TypeError, ValueError):
-        return False
+    """True only for an https URL on exactly one of this provider's own
+    hosts, never a subdomain of one.
+
+    The check itself lives in the core, so all of them answer the same way.
+    This app keeps the hosts and its refusal to follow subdomains, which is
+    how it has always behaved."""
+    return _host_allows(url, ALLOWED_HOSTS, subdomains=False)
 
 
 log = logging.getLogger("usbank_docs.site")
@@ -42,8 +45,6 @@ URLS = {
     "home": f"{BASE}/",
 
     "login": f"{PUBLIC}/",
-
-
 
 
     "documents": f"{BASE}/digital/servicing/shellapp/#/highvolume/edocs/statements",
@@ -136,22 +137,12 @@ FALLBACK = {
 }
 
 
-ROW_CONTROL_SEL = ("a[href$='.pdf'], a[download], "
-                   "a[aria-label*='statement' i], a[aria-label*='download' i], "
-                   "button[aria-label*='statement' i], button[aria-label*='download' i], "
-                   "button[aria-label*='view' i], "
-                   "a:has-text('Download'), a:has-text('View'), "
-                   "button:has-text('Download'), button:has-text('View'), "
-                   "button:has-text('PDF'), a:has-text('PDF')")
-ROW_CONTROL_FALLBACK_SEL = "button, a"
-
-
 DATE_PATTERNS = [
     (re.compile(r"(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
                 r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
                 r"Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+(\d{4})", re.I), "mdY"),
     (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"), "mdy_slash"),
-    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "iso"),
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?!\d)"), "iso"),
 ]
 _MONTHS = {m: i + 1 for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
@@ -161,17 +152,9 @@ MONTH_YEAR_RE = re.compile(
     r"\s+(\d{4})", re.I)
 QUARTER_RE = re.compile(r"\bQ([1-4])\s*[' ]?\s*(\d{4})\b", re.I)
 YEAR_RE = re.compile(r"\b(19|20)(\d{2})\b")
-_LAST_DAY = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30,
-             7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31}
 
 
-def _last_day(year: int, month: int) -> int:
-    if month == 2 and (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
-        return 29
-    return _LAST_DAY[month]
-
-
-def parse_date(text: str) -> Optional[str]:
+def _parse_date_from_page(text: str) -> Optional[str]:
     if not text:
         return None
     for pattern, kind in DATE_PATTERNS:
@@ -188,6 +171,15 @@ def parse_date(text: str) -> Optional[str]:
         except (KeyError, ValueError):
             continue
     return None
+
+
+def parse_date(text):
+    """The date this provider's page is showing, as YYYY-MM-DD.
+
+    The reading is below, unchanged. This only refuses to believe a result
+    that names a day which does not exist, because a reference number is
+    shaped like a date and used to be taken for one."""
+    return _checked_date(_parse_date_from_page(text), None)
 
 
 def parse_period_date(text: str) -> Tuple[Optional[str], str]:
@@ -398,19 +390,15 @@ def expand_all(page) -> None:
 
 
 def next_page(page) -> bool:
-    try:
-        loc = page.locator(FALLBACK["next_page"])
-        if loc.count() > 0 and loc.first.is_visible() and loc.first.is_enabled():
-            label = (loc.first.inner_text(timeout=800) or "") + \
-                (loc.first.get_attribute("aria-label") or "")
-            if FORBIDDEN_CONTROL_RE.search(label):
-                return False
-            loc.first.click()
-            page.wait_for_timeout(2500)
-            return True
-    except Exception:
-        pass
-    return False
+    """One page forward, through a control that says it pages forward.
+
+    Judged by an allowlist in the core rather than by FORBIDDEN_CONTROL_RE,
+    because that blocklist refuses the word "next". Correctly, since "Next"
+    is also what a wizard's commit button says, and fatally here, because it
+    meant this could never page forward at all and the run reported success
+    having seen only the first page.
+    """
+    return _click_next_page(page, FALLBACK["next_page"])
 
 
 @dataclass
@@ -470,8 +458,6 @@ def collect_documents(page) -> List[RawDoc]:
         date_text = r.get("date_text", "")
 
 
-
-
         key = (title, date_text, i)
         if key in seen:
             continue
@@ -502,7 +488,7 @@ _IDENTITY_JS = r"""el => {
   const form = el.closest('form');
   if (form) bits.push(form.id || '', form.getAttribute('name') || '',
                       form.getAttribute('aria-label') || '');
-  // the nearest labelled section/card this control lives in
+  // the nearest labeled section/card this control lives in
   const sect = el.closest("section, [role='region'], [class*='card'], [class*='Card'], " +
                           "[class*='widget'], [class*='Widget'], [class*='module']");
   if (sect) {
@@ -851,8 +837,6 @@ def select_period(page, year: str) -> bool:
         page.wait_for_timeout(1000)
 
 
-
-
         opt = page.get_by_role("option", name=re.compile(rf"^\s*{year}\b"))
         if opt.count() == 0:
             page.keyboard.press("Escape")
@@ -1013,13 +997,22 @@ def card_groups(page) -> List[Tuple[object, str]]:
     return [(None, label) for label in account_options(page)]
 
 
-def usbank_collect_structured(page) -> List[dict]:
+def usbank_collect_structured(page, keep=None) -> List[dict]:
+    """keep, when given, says which year-picker options a scoped run wants.
+    Years it refuses are not selected at all, which is the three seconds a
+    year this saves. An unscoped run passes None and walks every year."""
     if not ensure_statements(page):
         log.info("documents page not reachable")
         return []
 
     accounts = account_options(page) or [account_name(page)]
     periods = period_options(page) or [""]
+    if keep is not None:
+        wanted = [p for p in periods if keep(p)]
+        if len(wanted) < len(periods):
+            log.info("U.S. Bank: skipping %d year(s) outside the run's scope",
+                     len(periods) - len(wanted))
+        periods = wanted or [""]
     log.info("U.S. Bank: %d account(s) x %d year(s)", len(accounts), len(periods))
 
     found: List[dict] = []
@@ -1149,7 +1142,6 @@ def _row_download_button(row):
 def find_row_control(page, date: str, account: str = ""):
 
 
-
     rx = row_label_re(date)
     for row, heading in _statement_rows(page):
         if account and account_in_heading(heading) not in ("", account):
@@ -1263,8 +1255,6 @@ def probe_statements_api(page) -> dict:
     try:
         ensure_statements(page)
         page.wait_for_timeout(1500)
-
-
 
 
         newest = (period_options(page) or [""])[0]

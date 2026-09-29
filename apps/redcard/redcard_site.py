@@ -29,8 +29,14 @@ import html as _html
 import logging
 import re
 from dataclasses import dataclass
-from pathlib import Path
+
+from paperpull_core.delivery import DOWNLOAD, DocumentRequest
+from paperpull_core.identity import Identity
 from typing import List, Optional, Tuple
+
+from paperpull_core.dates import last_day as _last_day
+from paperpull_core.dates import human_date as _human_date
+from paperpull_core.dates import checked as _checked_date
 
 log = logging.getLogger("redcard_docs.site")
 
@@ -44,7 +50,6 @@ URLS = {
     "statements": STATEMENTS_URL,
     "documents": STATEMENTS_URL,
 }
-DOCUMENT_URL_CANDIDATES = [STATEMENTS_URL]
 
 LOGIN_URL_MARKERS = ["/login", "/logon", "/signin", "/sign-in", "/auth",
                      "/mfa", "/verification", "/challenge"]
@@ -64,7 +69,19 @@ FORBIDDEN_CONTROL_RE = re.compile(
     r"bank\b|routing|account\s+number|debit|add\s+card|link\s+bank|wallet|"
     r"\bapply\b|enroll|unenroll|sign\s+up|paperless|delivery\s+options|upgrade|"
     r"book\s+travel|\btravel\b|dispute|report\s+lost|lost\s+card|lock\s+card|"
-    r"freeze|\bcard\b|\baccount\b|"
+    r"freeze|"
+    # A verb reaching the noun, rather than the noun on its own.
+    # "card" and "account" used to be refused by themselves, and on a
+    # card portal those are what the DOCUMENT is called. The verb is
+    # what makes it dangerous, and the words in between are why an
+    # exact phrase is not enough: "Add a new card", "Manage my card".
+    # Same shape as the verb "edit" matching inside the noun "Credit".
+    r"(add|manage|activate|deactivate|replace|lock|unlock|freeze|link|"
+    r"unlink|remove|delete|close|open|report|order|request|upgrade|"
+    r"set\s*up)\b[\w'\s]{0,18}\b(card|account)s?\b|"
+    r"(card|account)s?\b[\w'\s]{0,12}\b(settings?|services?|preferences?|details)\b|"
+    r"virtual\s+card|lost\s+or\s+stolen|card\s+is\s+lost|"
+
     r"enable|disable|activate|deactivate|change\b|edit\b|update\b|modify|"
     r"set\s+up|delete|remove|cancel|close\s+account|"
     r"password|profile\b|settings|preferences|\bmanage\b|"
@@ -110,7 +127,7 @@ DATE_PATTERNS = [
                 r"Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+(\d{4})", re.I), "mdY"),
     (re.compile(r"\b(\d{1,2})-(\d{1,2})-(\d{4})\b"), "mdy_dash"),
     (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"), "mdy_slash"),
-    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "iso"),
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?!\d)"), "iso"),
 ]
 _MONTHS = {m: i + 1 for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
@@ -122,20 +139,8 @@ QUARTER_RE = re.compile(r"\bQ([1-4])\s*[' ]?\s*(\d{4})\b", re.I)
 YEAR_RE = re.compile(r"\b(19|20)(\d{2})\b")
 YEAR_ONLY_RE = re.compile(r"^20\d\d$")
 _MDY_DASH_RE = re.compile(r"\b(\d{2})-(\d{2})-(\d{4})\b")   # MM-DD-YYYY
-_LAST_DAY = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30,
-             7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31}
 
-_MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
-                "August", "September", "October", "November", "December"]
-
-
-def _last_day(year: int, month: int) -> int:
-    if month == 2 and (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
-        return 29
-    return _LAST_DAY[month]
-
-
-def parse_date(text: str) -> Optional[str]:
+def _parse_date_from_page(text: str) -> Optional[str]:
     if not text:
         return None
     for pattern, kind in DATE_PATTERNS:
@@ -152,6 +157,15 @@ def parse_date(text: str) -> Optional[str]:
         except (KeyError, ValueError):
             continue
     return None
+
+
+def parse_date(text):
+    """The date this provider's page is showing, as YYYY-MM-DD.
+
+    The reading is below, unchanged. This only refuses to believe a result
+    that names a day which does not exist, because a reference number is
+    shaped like a date and used to be taken for one."""
+    return _checked_date(_parse_date_from_page(text), None)
 
 
 def parse_period_date(text: str) -> Tuple[Optional[str], str]:
@@ -189,14 +203,6 @@ def _mdy_from_iso(iso: str) -> str:
     try:
         y, m, d = iso.split("-")
         return f"{m}-{d}-{y}"
-    except Exception:
-        return iso
-
-
-def _human_date(iso: str) -> str:
-    try:
-        y, m, d = iso.split("-")
-        return f"{_MONTH_NAMES[int(m) - 1]} {int(d)}, {y}"
     except Exception:
         return iso
 
@@ -371,7 +377,7 @@ class RawDoc:
     kind: str = "doc"
 
 
-def collect_download_docs(page) -> List[RawDoc]:
+def collect_download_docs(page, keep=None) -> List[RawDoc]:
     """Read every billing statement across all available years. The table shows
     one year at a time; harvest the current (latest) year, then click each
     past-year button and harvest again."""
@@ -390,8 +396,15 @@ def collect_download_docs(page) -> List[RawDoc]:
                                href="", text=f"Target Circle Card statement {disp}",
                                kind="statement"))
 
-    harvest()                                  # current (latest) year
-    for year in _year_buttons(page):           # each past year
+    harvest()                                  # current (latest) year, already shown
+    years = _year_buttons(page)                # each past year is a click
+    if keep is not None:
+        wanted = [y for y in years if keep(y)]
+        if len(wanted) < len(years):
+            log.info("RedCard: skipping %d year(s) outside the run's scope",
+                     len(years) - len(wanted))
+        years = wanted
+    for year in years:
         if _select_year(page, year):
             harvest()
     return docs
@@ -417,10 +430,21 @@ def _row_download_link(page, mdy: str):
     return None
 
 
-def _attempt_download(page, iso_date: str, out_path) -> Optional[bool]:
-    """One download attempt on the current page. Returns True on success, False
-    if the statement row/link can't be found, or None if we can't even reach a
-    signed-in Statements page (caller should reload / re-check the session)."""
+def identity_for(doc) -> Identity:
+    """What a statement's row carries, which is its date."""
+    return Identity(date=str(getattr(doc, "date", "") or "")[:10])
+
+
+def statement_request(page, iso_date: str) -> Optional[DocumentRequest]:
+    """Everything up to the click, for the statement dated `iso_date`.
+
+    Reach the statements page, pick that statement's year in the
+    switcher, find its row's download link and check the control. Then
+    stop, and hand the click to delivery.deliver.
+
+    None when the page cannot be reached, the row is not there, or the
+    control is one this app will not press. The caller tells those apart
+    by asking looks_signed_out, the way it always did."""
     if "/statements" not in (page.url or ""):
         if not goto_documents(page):
             return None
@@ -431,13 +455,13 @@ def _attempt_download(page, iso_date: str, out_path) -> Optional[bool]:
     if year and not any(d.startswith(year) for d in _row_dates(page)):
         if not _select_year(page, year):
             log.info("could not select year %s for %s", year, iso_date)
-            return False
+            return None
 
     mdy = _mdy_from_iso(iso_date)
     link = _row_download_link(page, mdy)
     if link is None:
         log.info("statement row not found for %s (%s)", iso_date, mdy)
-        return False
+        return None
 
     # Safety. This used to read is_safe_control("Download PDF statement") with
     # that string hardcoded, which always returned True and therefore gated
@@ -460,52 +484,46 @@ def _attempt_download(page, iso_date: str, out_path) -> Optional[bool]:
             label = ""
     templated = ("{{" in label) or ("}}" in label)
     if label and not templated and not is_safe_control(label):
-        log.error("refusing a control labelled %r", label[:60])
-        return False
+        log.error("refusing a control labeled %r", label[:60])
+        return None
 
-    from paperpull_core.receipt_pdf import save_download
     try:
         link.scroll_into_view_if_needed(timeout=4000)
     except Exception:
         pass
-    with page.expect_download(timeout=45000) as dl:
-        link.click()
-    save_download(dl.value, out_path)
-    return True
+    # A statement row carries its date and nothing else this app reads,
+    # so that is the one fact a saved file can be checked against.
+    return DocumentRequest(trigger=link.click,
+                           expect=Identity(date=iso_date),
+                           hints=(DOWNLOAD,))
 
 
-def download_document(page, category, iso_date: str, out_path) -> bool:
-    """Download the billing statement dated `iso_date`. Selects that statement's
-    year in the switcher, finds its table row, and clicks the row's 'Download
-    pdf' link, capturing the real download event. `category` is unused (every
-    document here is a Statement).
+def resync(page) -> bool:
+    """Get back to a live statements page after a click did nothing.
 
-    TD's portal session is short-lived: when it expires the SPA keeps showing a
-    cached statements table, but download clicks silently do nothing. So if the
-    first attempt fails, hard-navigate to the Statements URL (which redirects to
-    the auth page if the session is truly dead, letting looks_signed_out catch
-    it) and retry once."""
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    TD's portal session is short-lived and dies quietly. The SPA keeps
+    showing a cached statements table while download clicks silently do
+    nothing, so a first attempt producing nothing is ordinary here
+    rather than exceptional.
 
-    try:
-        r = _attempt_download(page, iso_date, out_path)
-        if r:
-            return True
-    except Exception as e:
-        log.info("download attempt 1 failed for %s: %s", iso_date, e)
+    A fresh navigation refreshes a stale download token and surfaces a
+    dead session as a redirect to the auth page, which looks_signed_out
+    then catches. False means the session is gone and retrying would
+    only click at a page that cannot answer.
 
-    # Re-sync: a fresh navigation refreshes any stale download token and surfaces
-    # an expired session as a redirect to the auth page.
+    This is the app's own business. The interceptor fires a trigger
+    exactly once on purpose, because a click on somebody's bank is not
+    a thing to repeat, so a provider that needs another attempt builds
+    another request for it."""
     try:
         page.goto(STATEMENTS_URL, wait_until="domcontentloaded", timeout=45000)
         page.wait_for_timeout(3000)
         if looks_signed_out(page):
-            log.info("session expired while downloading %s (needs re-login)", iso_date)
+            log.info("the session expired, so a retry would not help")
             return False
-        return bool(_attempt_download(page, iso_date, out_path))
+        return True
     except Exception as e:
-        log.info("download click failed for %s: %s", iso_date, e)
+        log.info("could not get back to the statements page: %s", e)
         return False
 
 
@@ -546,15 +564,9 @@ ALLOWED_HOSTS = {'target.com'}
 
 
 def is_safe_url(url: str) -> bool:
-    """True only for an https URL on one of this provider's own hosts."""
-    from urllib.parse import urlparse
-    try:
-        got = urlparse(url or "")
-    except ValueError:
-        return False
-    if got.scheme != "https" or not got.hostname:
-        return False
-    if got.username or got.password:
-        return False
-    host = got.hostname.lower().rstrip(".")
-    return any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS)
+    """True only for an https URL on one of this provider's own hosts.
+
+    The check itself lives in the core, so all of them answer the same way.
+    This app keeps the hosts, which is the part that really is its own."""
+    from paperpull_core.urls import is_safe_url as _host_allows
+    return _host_allows(url, ALLOWED_HOSTS)

@@ -35,9 +35,11 @@ import html as _html
 import logging
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from paperpull_core.models import IN_STORE, ONLINE, Item, Purchase
+from paperpull_core.urls import is_safe_url as _host_allows
+from paperpull_core.dates import checked as _checked_date
 from storage import now_iso
 
 log = logging.getLogger("gap_receipts.site")
@@ -56,12 +58,6 @@ URLS = {
 
 LOGIN_URL_MARKERS = ["/sign-in", "/signin", "/login", "/my-account/sign",
                      "/authenticate", "loginredirect", "/account/sign-in"]
-
-
-def orders_url(year: Optional[int] = None, start_index: int = 0) -> str:
-    """Gap's order history takes no year/offset parameters - everything lazy
-    loads onto one page - so the arguments are accepted and ignored."""
-    return URLS["orders"]
 
 
 def order_details_url(order_id: str) -> str:
@@ -96,17 +92,6 @@ DEFAULT_BRAND = "Gap"
 # ---------------------------------------------------------------------------
 # Accessible names / labels
 # ---------------------------------------------------------------------------
-
-TAB_NAME = {
-    ONLINE: re.compile(r"^\s*order\s+history\s*$", re.I),
-    IN_STORE: re.compile(r"^\s*order\s+history\s*$", re.I),
-}
-
-LOAD_MORE_RE = re.compile(r"(load more|show more|view more|see more)", re.I)
-RECEIPT_SECTION_RE = re.compile(r"(purchase\s+summary|order\s+summary|receipt)", re.I)
-PRINT_RECEIPT_RE = re.compile(r"(print\s+receipt|print\s+invoice|view\s+invoice)", re.I)
-GIFT_RECEIPT_RE = re.compile(r"gift\s+receipt", re.I)
-INVOICE_RE = re.compile(r"(view|print|download)?\s*invoice", re.I)
 SIGN_IN_RE = re.compile(r"^\s*sign\s*in\s*$", re.I)
 
 # The block that holds the receipt on a hydrated order-details page.
@@ -150,7 +135,7 @@ SAFE_DOC_CONTROL_RE = re.compile(
 # skipped entirely when order cards / a hydrated receipt render.
 SECURITY_CHALLENGE_MARKERS = [
     "enter the characters you see", "type the characters you see",
-    "are you a robot", "robot check", "press and hold",
+    "are you a robot", "robot check", "press & hold", "press and hold",
     "verify you are a human", "verify you are human",
     "checking your browser before accessing",
     "access to this page has been denied",
@@ -182,28 +167,24 @@ FALLBACK = {
     "print_page_body": "body",
 }
 
-CARD_CONTAINER = {ONLINE: FALLBACK["order_card"],
-                  IN_STORE: FALLBACK["order_card"]}
-
 DATE_PATTERNS = [
     (re.compile(r"(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
                 r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
                 r"Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+(\d{4})", re.I), "mdY"),
     (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"), "mdy_slash"),
-    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "iso"),
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?!\d)"), "iso"),
 ]
 _MONTHS = {m: i + 1 for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
 
 MONEY_RE = re.compile(r"\$\s*([\d,]+\.\d{2})")
-QTY_RE = re.compile(r"\b(?:qty|quantity)\s*:?\s*(\d+)", re.I)
 STATUS_WORDS_RE = re.compile(
     r"\b(delivered|shipped|in\s+transit|out\s+for\s+delivery|arriving|"
     r"ready\s+for\s+pickup|picked\s+up|cancell?ed|returned|refunded|"
     r"processing|preparing|order\s+placed)\b", re.I)
 
 
-def parse_date(text: str) -> Optional[str]:
+def _parse_date_from_page(text: str) -> Optional[str]:
     if not text:
         return None
     for pattern, kind in DATE_PATTERNS:
@@ -221,6 +202,15 @@ def parse_date(text: str) -> Optional[str]:
         except (KeyError, ValueError):
             continue
     return None
+
+
+def parse_date(text):
+    """The date this provider's page is showing, as YYYY-MM-DD.
+
+    The reading is below, unchanged. This only refuses to believe a result
+    that names a day which does not exist, because a reference number is
+    shaped like a date and used to be taken for one."""
+    return _checked_date(_parse_date_from_page(text), None)
 
 
 def parse_money(text: str) -> str:
@@ -365,42 +355,6 @@ def goto_orders(page) -> None:
         log.warning("No order links appeared on the order-history page within 30s")
     page.wait_for_timeout(1500)
     scroll_all_orders(page)
-
-
-def select_history_tab(page, purchase_type: str) -> bool:
-    """Gap has no separate tabs: one history page holds both online orders
-    and in-store purchases."""
-    return purchase_type in (ONLINE, IN_STORE)
-
-
-def goto_year_page(page, year: int, start_index: int = 0) -> bool:
-    """Gap has no per-year pages: one scrolled order-history page holds the
-    whole available history. The first call loads it; any later call (a
-    different year, or a pagination offset) reports 'nothing more here'."""
-    if start_index:
-        return False
-    goto_orders(page)
-    return True
-
-
-def get_year_options(page) -> List[str]:
-    """Gap exposes no year filter."""
-    return []
-
-
-def has_next_page(page) -> bool:
-    """Gap lazy-loads instead of paginating; goto_orders already scrolled
-    everything in."""
-    return False
-
-
-def load_all_cards(page, purchase_type: str = ONLINE,
-                   delay_ms: int = 1200, max_rounds: int = 20) -> int:
-    return scroll_all_orders(page, max_rounds=max_rounds, delay_ms=delay_ms)
-
-
-def _card_count(page, purchase_type: str = ONLINE) -> int:
-    return _order_link_count(page)
 
 
 # An in-store purchase card reads "Purchased In Store - 5 Items" followed by
@@ -572,8 +526,15 @@ def wait_for_hydration(page, timeout_ms: int = 45000) -> bool:
 def goto_details(page, purchase: Purchase) -> None:
     """Open the order-details page and wait for it to hydrate. That page is
     both where the order data is read AND what gets saved as the receipt."""
-    page.goto(order_details_url(purchase.order_number),
-              wait_until="domcontentloaded", timeout=60000)
+    url = order_details_url(purchase.order_number)
+    # Built from the order number against a fixed base, so today this can only
+    # refuse if the base changes. It is here because the same function in the
+    # Target app started out built the same way and later took an address off
+    # the page instead, and nothing noticed the guard had stopped applying.
+    if not is_safe_url(url):
+        raise ValueError("refusing to open an order page that is not on Gap: %s"
+                         % url[:80])
+    page.goto(url, wait_until="domcontentloaded", timeout=60000)
     wait_for_hydration(page)
 
 
@@ -888,19 +849,6 @@ def open_receipt_section(page) -> bool:
     return receipt_is_present(page)
 
 
-def wait_for_receipt_content(page, timeout_ms: int = 15000) -> str:
-    rounds = max(1, timeout_ms // 500)
-    for _ in range(rounds):
-        if receipt_is_present(page):
-            return "order-details"
-        page.wait_for_timeout(500)
-    return ""
-
-
-def count_store_receipts(page) -> int:
-    return 1
-
-
 # --- receipt-access hooks Gap does not need --------------------------------
 # The orchestrator calls these when a merchant hides its receipt behind a
 # button, a print popup or an iframe. Gap does none of that (navigate ->
@@ -928,12 +876,6 @@ def find_receipt_iframe(page):
     return None
 
 
-def trigger_print_receipt(page, control, timeout_ms: int = 15000) -> Tuple[str, object]:
-    """Unused for Gap (capture is inline on the details page). Kept for API
-    parity with the other site layers."""
-    return "inline", page
-
-
 # ---------------------------------------------------------------------------
 # Host allowlist. Added repo-wide after a review found this app would fetch or
 # navigate to whatever URL a stored record or a page attribute contained, using
@@ -944,15 +886,8 @@ ALLOWED_HOSTS = {'gap.com'}
 
 
 def is_safe_url(url: str) -> bool:
-    """True only for an https URL on one of this provider's own hosts."""
-    from urllib.parse import urlparse
-    try:
-        got = urlparse(url or "")
-    except ValueError:
-        return False
-    if got.scheme != "https" or not got.hostname:
-        return False
-    if got.username or got.password:
-        return False
-    host = got.hostname.lower().rstrip(".")
-    return any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS)
+    """True only for an https URL on one of this provider's own hosts.
+
+    The check itself lives in the core, so all of them answer the same way.
+    This app keeps the hosts, which is the part that really is its own."""
+    return _host_allows(url, ALLOWED_HOSTS)

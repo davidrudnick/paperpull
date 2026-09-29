@@ -6,7 +6,7 @@ with the page to reach a document. A year picker has to be set. An accordion
 has to be opened. Those are the moments where a mistake stops being a bug and
 becomes something that touched the user's money.
 
-This module exists because that judgement was written three times, in three
+This module exists because that judgment was written three times, in three
 apps, and the third copy was the only one that got it right. The Ally and
 Chase apps refused a control if it belonged to a money-movement widget, which
 is the obvious danger. Neither considered that a control might belong to a
@@ -196,3 +196,194 @@ SETTINGS_CONTROL_RE = re.compile(
     r"\breallocate\b|\bliquidat(e|es|ed|ing|ion)\b|"
     r"\bbuy\b|\bsell\b|\bschedule\s+(a\s+)?(payment|transfer)\b",
     re.I)
+
+
+# -- reading the controls on a page -------------------------------------------
+#
+# Both of these were identical in the eleven apps cut from one scaffold, so
+# every provider added since made another copy. The pattern that says which
+# words finish a download stays with the app, because AT&T's menu says
+# things nobody else's does, and so does the app's own is_safe_control.
+
+def control_texts(page, roles=("button", "link", "menuitem"), limit: int = 120) -> set:
+    """The visible words of every control on the page, tidied and cut short.
+
+    Used to tell what a click revealed: take this before and after, and the
+    difference is what appeared. Anything that will not answer is skipped
+    rather than raised, because a page mid-render is normal and a survey
+    that stops is worth less than a partial one.
+    """
+    out = set()
+    for role in roles:
+        try:
+            loc = page.get_by_role(role)
+            for i in range(min(loc.count(), limit)):
+                try:
+                    t = (loc.nth(i).inner_text(timeout=200) or "").strip()
+                except Exception:
+                    continue
+                if t:
+                    out.add(re.sub(r"\s+", " ", t)[:60])
+        except Exception:
+            pass
+    return out
+
+
+def second_step(page, appeared: set, pattern: Pattern, is_safe_control):
+    """A control the click revealed whose text says it finishes a download,
+    as (locator, text), or (None, "").
+
+    Several providers answer a Download button with a small menu, so the
+    document arrives only after a second click. The ones that read like the
+    plain choice are tried first, because "Regular PDF" is the bill and
+    "Itemized PDF" is a different document. Whatever is picked still has to
+    pass the app's own guard.
+    """
+    ranked = sorted(appeared,
+                    key=lambda t: (0 if re.search(r"regular|standard|full|^download", t, re.I) else 1, t))
+    for text in ranked:
+        if pattern.match(text) and is_safe_control(text):
+            for role in ("button", "link", "menuitem"):
+                try:
+                    loc = page.get_by_role(role, name=re.compile("^" + re.escape(text) + "$", re.I))
+                    if loc.count() and loc.first.is_visible():
+                        return loc.first, text
+                except Exception:
+                    continue
+    return None, ""
+
+
+def controls_named(page, name_re: Pattern, roles=("button", "link")):
+    """Every control on the page whose name matches, as one locator.
+
+    A document is offered as a button on one provider and a link on the
+    next, and the row it sits in supplies the date either way.
+
+    A control is matched on its ACCESSIBLE NAME, which is what a screen
+    reader would say and is usually what is written on it. Usually. A
+    tester's survey counted eighteen controls on a page by what they say
+    and this found none of them, so discovery reported no documents on a
+    page holding nine. Whatever the cause on that page, a control whose
+    own words match is a control, so when the accessible name finds
+    nothing the words are asked instead (#38).
+    """
+    loc = page.get_by_role(roles[0], name=name_re)
+    for role in roles[1:]:
+        loc = loc.or_(page.get_by_role(role, name=name_re))
+    try:
+        if loc.count():
+            return loc
+    except Exception:
+        return loc
+    by_text = page.locator("a, button, [role=button], [role=link]").filter(has_text=name_re)
+    try:
+        if by_text.count():
+            log.info("no control matched by its accessible name, %d matched by its words",
+                     by_text.count())
+            return by_text
+    except Exception:
+        pass
+    return loc
+
+
+# ---------------------------------------------------------------------------
+# Paging forward
+#
+# Pagination needs its own judgement, and finding that out took a while.
+# Every blocklist here refuses the word "next", correctly, because "Next" is
+# what a wizard's commit button says. Eight apps then handed a pagination
+# control to that same blocklist, so a control labeled "Next" was refused and
+# they could not page forward at all. The run finished, reported success, and
+# had seen the first page.
+#
+# Before that was noticed the hole went the other way: the label was empty for
+# an icon-only chevron, an empty string matches no blocklist, and the control
+# was clicked blind on a bank page.
+#
+# Both stop being possible if the label has to SAY it pages forward, matched
+# whole rather than searched, so nothing else can ride along inside it.
+# ---------------------------------------------------------------------------
+
+NEXT_LABEL_RE = re.compile(
+    r"^(?:next(?:\s+(?:page|month|period|\d{1,4}|>|»|›))?"
+    r"|(?:go\s+to\s+)?next\s+page"
+    r"|older(?:\s+(?:documents?|statements?|activity))?"
+    r"|>|>>|\u203a|\u203a\u203a|\u00bb|\u2192)$", re.I)
+
+
+def is_next_control(label: str) -> bool:
+    """Whether this label means one page forward, and nothing else.
+
+    An allowlist, matched against the whole label, because the blocklists
+    cannot help here: they all refuse "next" for the commit button that
+    also says it. "Next", "Next page" and a bare chevron pass. "Next
+    Payment Due", "Pay now" and an empty label do not.
+    """
+    return bool(NEXT_LABEL_RE.match(re.sub(r"\s+", " ", (label or "").strip())))
+
+
+def control_labels(el) -> list:
+    """Each label a control carries, separately.
+
+    Separately is the point, twice over. These were built by adding the
+    text to the aria-label with nothing in between, so a control with both
+    read "NextNext", a word no rule can be written against. Joining them
+    with a space instead only moves the problem: a chevron whose text is
+    "Next" and whose aria-label is "Next page" would read "Next Next page",
+    which is not what either of them says.
+    """
+    def text_of():
+        # A Locator takes a timeout, an ElementHandle does not, and both
+        # turn up here. Asking the wrong one raises TypeError, which would
+        # have come back as a control with no label at all.
+        try:
+            return el.inner_text(timeout=800)
+        except TypeError:
+            return el.inner_text()
+
+    out = []
+    for read in (text_of,
+                 lambda: el.get_attribute("aria-label"),
+                 lambda: el.get_attribute("title")):
+        try:
+            text = (read() or "").strip()
+        except Exception:
+            text = ""
+        text = re.sub(r"\s+", " ", text)
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def control_label(el) -> str:
+    """The same labels as one string, for a log line or a message."""
+    return " | ".join(control_labels(el))
+
+
+def click_next_page(page, selector: str, settle_ms: int = 2500,
+                    limit: int = 8) -> bool:
+    """Page forward once, through the first control that says it does that.
+
+    Every candidate is looked at rather than only the first, because the
+    selectors here are broad enough to catch an unrelated element whose
+    class merely contains "next", and stopping at that one meant never
+    reaching the real control behind it.
+    """
+    try:
+        loc = page.locator(selector)
+        count = loc.count()
+    except Exception:
+        return False
+    for i in range(min(count, limit)):
+        try:
+            el = loc.nth(i)
+            if not (el.is_visible() and el.is_enabled()):
+                continue
+            if not any(is_next_control(part) for part in control_labels(el)):
+                continue
+            el.click()
+            page.wait_for_timeout(settle_ms)
+            return True
+        except Exception:
+            continue
+    return False

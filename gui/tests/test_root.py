@@ -173,3 +173,277 @@ def test_only_folders_with_an_entry_script_count(tmp_path):
 
 def test_a_missing_root_counts_as_zero(tmp_path):
     assert app_module._looks_like_installs(tmp_path / "nope") == 0
+
+
+def test_the_packaged_app_never_defaults_inside_its_own_bundle(settings, monkeypatch):
+    """On macOS the bundle sits under /Applications, where the system blocks
+    writes, and on either platform an upgrade replaces it. The first-run
+    screen offered ~/Documents/PaperPull while the header said the bundle."""
+    monkeypatch.setattr(app_module, "_is_packaged", lambda: True)
+    assert app_module.apps_root() == Path.home() / "Documents" / "PaperPull"
+    assert app_module.root_source() == "default"
+
+
+def test_a_packaged_install_is_not_told_to_run_setup(settings, tmp_path, monkeypatch):
+    """No per-app venv is the normal state in the package, the bundled
+    interpreter carries everything. The checkout-era hint about setup.bat
+    showed on every app of a packaged install."""
+    root = tmp_path / "installs"
+    _installs(root, 1)
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"apps_root": str(root)}), encoding="utf-8")
+    monkeypatch.setattr(app_module, "_is_packaged", lambda: False)
+    checkout = app_module.discover_apps()
+    assert all(a["needs_setup"] for a in checkout.values())
+    monkeypatch.setattr(app_module, "_is_packaged", lambda: True)
+    packaged = app_module.discover_apps()
+    assert not any(a["needs_setup"] for a in packaged.values())
+
+
+def test_on_windows_settings_live_in_roaming_appdata_not_beside_the_program(tmp_path, monkeypatch):
+    """The installer puts the program in Local AppData. The settings file sat
+    in the same folder for two releases and survived only because nothing
+    happened to delete it. A Store install makes that folder read-only."""
+    monkeypatch.setattr(app_module.sys, "platform", "win32")
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    p = app_module._settings_path()
+    assert p == tmp_path / "Roaming" / "PaperPull" / "settings.json"
+
+
+def test_a_settings_file_from_an_earlier_version_is_moved_once(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module.sys, "platform", "win32")
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    old = tmp_path / "Local" / "PaperPull" / "settings.json"
+    old.parent.mkdir(parents=True)
+    old.write_text('{"apps_root": "D:/mine"}', encoding="utf-8")
+    p = app_module._settings_path()
+    assert p == tmp_path / "Roaming" / "PaperPull" / "settings.json"
+    assert p.read_text(encoding="utf-8") == '{"apps_root": "D:/mine"}'
+    assert not old.exists(), "the old copy must not linger to be read by mistake"
+    # the program folder beside it is untouched
+    assert (tmp_path / "Local" / "PaperPull").is_dir()
+    # and the choice survives
+    monkeypatch.delenv("APPS_ROOT", raising=False)
+    assert app_module.apps_root() == Path("D:/mine")
+
+
+def test_stopping_a_recording_writes_the_file_the_app_waits_for(settings, tmp_path, monkeypatch):
+    """A recording has no natural end. Started from the panel the app's
+    input is closed, so this file is the only way to say when to stop."""
+    root = tmp_path / "installs"
+    d = root / "Bank Statements"
+    d.mkdir(parents=True)
+    (d / "bank_docs.py").write_text("# entry\n", encoding="utf-8")
+    (d / "config.json").write_text(json.dumps({"output_dir": "."}), encoding="utf-8")
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps({"apps_root": str(root)}), encoding="utf-8")
+    out = asyncio.run(app_module.api_record_stop(_Req({"app": "Bank Statements"})))
+    assert out["stopping"] is True
+    assert (d / "Diagnostics" / ".stop-recording").is_file()
+
+
+def test_a_recording_stop_follows_the_config_to_another_drive(settings, tmp_path, monkeypatch):
+    root = tmp_path / "installs"
+    d = root / "Bank Statements"
+    d.mkdir(parents=True)
+    (d / "bank_docs.py").write_text("# entry\n", encoding="utf-8")
+    elsewhere = tmp_path / "D" / "Bank"
+    elsewhere.mkdir(parents=True)
+    (d / "config.json").write_text(json.dumps({"output_dir": str(elsewhere)}),
+                                   encoding="utf-8")
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps({"apps_root": str(root)}), encoding="utf-8")
+    asyncio.run(app_module.api_record_stop(_Req({"app": "Bank Statements"})))
+    assert (elsewhere / "Diagnostics" / ".stop-recording").is_file()
+
+
+def test_an_unknown_app_cannot_be_told_to_stop(settings, tmp_path):
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps({"apps_root": str(tmp_path)}), encoding="utf-8")
+    with pytest.raises(app_module.HTTPException) as e:
+        asyncio.run(app_module.api_record_stop(_Req({"app": "../etc"})))
+    assert e.value.status_code == 404
+
+
+def test_stop_uses_the_app_the_recording_started_on():
+    """The App list is not disabled during a run. Reading it back when Stop
+    is pressed would write the sentinel into whichever provider happened to
+    be selected, and the recording, watching its own folder, would never
+    end."""
+    js = app_module.HTML
+    assert "body: JSON.stringify({ app: recordingApp })" in js
+    assert "body: JSON.stringify({ app: $('app').value })" not in js
+    assert "recordingApp = (action === 'record') ? app : null;" in js
+    # And it is cleared both ways a run can finish, so the button cannot
+    # fire against a recording that is already over.
+    assert js.count("recordingApp = null;") >= 3
+
+
+def test_the_panel_offers_record_and_tucks_it_behind_more():
+    assert "record" in app_module.ACTIONS
+    assert app_module.ACTIONS["record"]["flags"] == ["--record"]
+    assert "record" in app_module.MORE_ACTIONS
+
+
+def test_renaming_is_two_buttons_because_it_is_two_steps():
+    """The first changes nothing and prints what it would do. A panel
+    with one button would show a preview and leave nowhere to go."""
+    assert app_module.ACTIONS["rename"]["flags"] == ["--rename"]
+    assert app_module.ACTIONS["rename_apply"]["flags"] == ["--rename", "--apply"]
+    for key in ("rename", "rename_apply"):
+        assert key in app_module.MORE_ACTIONS, key
+
+
+def test_the_preview_is_the_one_that_reads_as_harmless():
+    """Whichever of the two is pressed by somebody not reading closely
+    should be the one that changes nothing."""
+    assert app_module.ACTIONS["rename"]["label"] == "Rename preview"
+    assert "apply" in app_module.ACTIONS["rename_apply"]["label"].lower()
+    assert "--apply" not in app_module.ACTIONS["rename"]["flags"]
+
+
+def test_the_panel_says_what_the_two_buttons_do():
+    text = app_module.HTML
+    assert "Rename preview</b> shows what this app would call" in text
+    assert "Apply renames" in text
+    assert "this app downloaded are touched" in text
+    assert "Nothing is downloaded either way" in text
+
+
+def test_a_rename_gets_the_flags_the_app_understands(settings, tmp_path):
+    meta = {"accounts": ["primary"], "login_flag": "--login",
+            "python": "py", "script": str(tmp_path / "x_receipts.py")}
+    for action, expected in (("rename", ["--rename"]),
+                             ("rename_apply", ["--rename", "--apply"])):
+        cmd = app_module._build_cmd(meta, "primary", action)
+        assert cmd[2:] == expected, action
+
+# ---------------------------------------------------------------------------
+# What adding a provider leaves behind
+#
+# Both of these were found by adding Costco and running it, not by a test.
+# An install made from this panel could not import the shared core at all,
+# and it ran with no account holder name, which is the one thing redaction
+# needs to take a person's name out of a file before it is sent anywhere.
+# ---------------------------------------------------------------------------
+
+def _fake_venv(install, with_core=False):
+    """A venv the way a real one is laid out on Windows."""
+    site = install / ".venv" / "Lib" / "site-packages"
+    site.mkdir(parents=True, exist_ok=True)
+    if with_core:
+        pkg = site / "paperpull_core"
+        pkg.mkdir(exist_ok=True)
+        (pkg / "__init__.py").write_text("# old\n", encoding="utf-8")
+    return site
+
+
+def test_an_install_with_a_venv_and_no_core_is_given_one(tmp_path, monkeypatch):
+    """setup.bat installs the core from the repo two folders up, or from a
+    wheel the packaged build ships. An install made from this panel sits in
+    somebody's Documents folder and has neither, so setup finished cleanly
+    and left a venv that could not import anything."""
+    install = tmp_path / "Costco Receipts"
+    install.mkdir()
+    (install / "costco_receipts.py").write_text("def main(): pass\n", encoding="utf-8")
+    site = _fake_venv(install)
+
+    made = app_module.ensure_core(install)
+    assert made, "nothing was seeded"
+    assert (site / "paperpull_core" / "__init__.py").is_file()
+    assert (site / "paperpull_core" / "recorder.py").is_file()
+
+
+def test_seeding_the_core_is_idempotent(tmp_path):
+    install = tmp_path / "Costco Receipts"
+    install.mkdir()
+    (install / "costco_receipts.py").write_text("def main(): pass\n", encoding="utf-8")
+    _fake_venv(install)
+    assert app_module.ensure_core(install)
+    assert app_module.ensure_core(install) == []
+
+
+def test_an_existing_core_is_updated_and_the_old_one_kept(tmp_path):
+    """The reason this function existed before it could seed. An entry
+    script written against a newer core than the copy in the venv dies on
+    Login over a keyword the copy never heard of."""
+    install = tmp_path / "Costco Receipts"
+    install.mkdir()
+    (install / "costco_receipts.py").write_text("def main(): pass\n", encoding="utf-8")
+    site = _fake_venv(install, with_core=True)
+
+    made = app_module.ensure_core(install)
+    assert "paperpull_core/__init__.py" in made
+    assert (site / "paperpull_core" / "__init__.py").read_text(encoding="utf-8") != "# old\n"
+    backups = list((install / "Backups").rglob("paperpull_core/__init__.py"))
+    assert backups and backups[0].read_text(encoding="utf-8") == "# old\n"
+
+
+def test_an_install_with_no_venv_is_left_alone(tmp_path):
+    """The packaged build has no venv. Its interpreter carries the core,
+    so there is nothing to seed and nothing to break."""
+    install = tmp_path / "Costco Receipts"
+    install.mkdir()
+    assert app_module.ensure_core(install) == []
+
+
+def test_the_core_check_runs_even_after_the_file_sweep_has_been_done(tmp_path,
+                                                                    monkeypatch):
+    """The file sweep compares every shipped file byte for byte, so it runs
+    once per panel run. setup.bat is run after the panel has already
+    started, so a memo on the core check would leave the answer a restart
+    away."""
+    root = tmp_path / "installs"
+    install = root / "Costco Receipts"
+    install.mkdir(parents=True)
+    (install / "costco_receipts.py").write_text("def main(): pass\n", encoding="utf-8")
+    site = _fake_venv(install)
+    monkeypatch.setattr(app_module, "apps_root", lambda: root)
+    app_module._REFRESHED_ROOTS.add(str(root))
+    try:
+        out = app_module.refresh_installs()
+    finally:
+        app_module._REFRESHED_ROOTS.discard(str(root))
+    assert "Costco Receipts" in out
+    assert (site / "paperpull_core" / "__init__.py").is_file()
+
+
+def test_a_new_install_is_given_the_account_holders_name(tmp_path, monkeypatch):
+    """An app asks for this on its first run at a console. Started from
+    this panel its stdin is closed, so it cannot ask, and an empty name is
+    the one thing that stops redaction taking a person's name out of a
+    survey or a recording."""
+    root = tmp_path / "installs"
+    root.mkdir()
+    assert app_module.create_install(root, "costco", owner="Alex Morgan") == "created"
+    cfg = json.loads((root / "Costco Receipts" / "config.json")
+                     .read_text(encoding="utf-8"))
+    assert cfg["owner"] == "Alex Morgan"
+    # and nothing else in the example config was disturbed
+    assert cfg["cdp_url"].endswith(":9268")
+
+
+def test_a_new_install_without_a_name_still_works(tmp_path):
+    root = tmp_path / "installs"
+    root.mkdir()
+    assert app_module.create_install(root, "costco") == "created"
+    cfg = json.loads((root / "Costco Receipts" / "config.json")
+                     .read_text(encoding="utf-8"))
+    assert cfg["owner"] == ""
+
+
+def test_the_panel_asks_for_the_name_before_it_makes_anything():
+    js = app_module.HTML
+    assert "Whose documents are these?" in js
+    assert "body: JSON.stringify({root, providers: picked, owner})" in js
+
+
+def test_a_name_long_enough_to_be_an_attack_is_cut(tmp_path):
+    root = tmp_path / "installs"
+    root.mkdir()
+    app_module.create_install(root, "costco", owner="x" * 500)
+    cfg = json.loads((root / "Costco Receipts" / "config.json")
+                     .read_text(encoding="utf-8"))
+    assert len(cfg["owner"]) == 80

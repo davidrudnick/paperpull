@@ -3,19 +3,19 @@
 Downloads your available Walmart.com purchase history (Online and In-store),
 saves each printable receipt directly as a PDF, and maintains two CSV files:
 
-- `Walmart Order History.csv` — one row per purchased item
-- `Walmart Receipt Index.csv` — one row per downloaded PDF
+- `Walmart Order History.csv`, one row per purchased item
+- `Walmart Receipt Index.csv`, one row per downloaded PDF
 
 Everything runs **locally**. Nothing (item names, receipts, account data) is
 sent to any external AI API or third-party service. You sign in to Walmart
-**manually** — the tool never touches your credentials, and never bypasses
+**manually**, the tool never touches your credentials, and never bypasses
 CAPTCHAs or security checks.
 
 ## How Walmart differs from a normal run
 
 Walmart uses aggressive bot detection (PerimeterX "Robot or human?"). An
 automation-launched browser cannot pass it. So this tool does **not** launch
-its own browser — instead it **connects to an ordinary Chromium that YOU sign
+its own browser, instead it **connects to an ordinary Chromium that YOU sign
 into**, over the DevTools protocol (`cdp_url` in `config.json`). A real human
 signs in to a real browser (no stealth, no evasion); the tool only reads the
 pages you are authorized to see. Because the browser is launched normally,
@@ -26,7 +26,7 @@ the tool runs. Closing it signs you out (Walmart uses in-memory session
 cookies).
 
 Receipts are captured with Chromium's `printToPDF` (print media) directly on
-the order-details page — the tool never clicks "View receipt details" /
+the order-details page, the tool never clicks "View receipt details" /
 "Print invoice" (those fire the native print dialog). In-store trips are saved
 as **Receipts**, online orders as **Invoices** (Walmart exposes only an
 invoice for online orders).
@@ -39,7 +39,7 @@ invoice for online orders).
    debugging port) at Walmart's sign-in page.
 3. Sign in to Walmart in that window (handle any "Robot or human?" check).
    Go to walmart.com/orders and confirm you see your orders.
-4. **Leave that browser window OPEN.** Then run `run_pilot.bat` / `run_all.bat`.
+4. **Leave that browser window OPEN.** Then run `paperpull walmart pilot` / `paperpull walmart all`.
    Verify the connection any time with `python walmart_receipts.py --login`.
 
 ## Recommended workflow
@@ -48,12 +48,12 @@ invoice for online orders).
 |------|---------|--------------|
 | 1 | `login.bat` | Manual sign-in, saved in local browser profile |
 | 2 | `python walmart_receipts.py --diagnose` | Inspects one purchase per section; writes Diagnostics |
-| 3 | `run_pilot.bat` | 5 newest Online + 3 newest In-store; then **stops** |
+| 3 | `paperpull walmart pilot` | 5 newest Online + 3 newest In-store; then **stops** |
 | 4 | inspect the PDFs/CSVs | You approve before anything bigger runs |
-| 5 | `run_all.bat` | Full history (asks for `YES` confirmation) |
-| any time | `resume.bat` | Continue after an interruption — never restarts finished work |
-| any time | `verify_receipts.bat` | Re-validate every indexed PDF |
-| any time | `review_names.bat` | Fix low-confidence filenames interactively |
+| 5 | `paperpull walmart all` | Full history (asks for `YES` confirmation) |
+| any time | `paperpull walmart resume` | Continue after an interruption, never restarts finished work |
+| any time | `paperpull walmart verify` | Re-validate every indexed PDF |
+| any time | `review_names.bat`, `./review_names.command` on a Mac, or `paperpull walmart review-names` | Fix low-confidence filenames interactively |
 
 ## All command-line options
 
@@ -80,13 +80,13 @@ C:\Users\YOU\Downloads\Walmart Receipts\
 
 Filenames: `YYYY-MM-DD Walmart <Purchase Summary> Receipt.pdf`
 (e.g. `2024-12-31 Walmart Groceries Receipt.pdf`). Collisions get ` (2)`,
-` (3)`… — an existing PDF is **never overwritten**.
+` (3)`…, an existing PDF is **never overwritten**.
 
 ## Classification
 
 `category_rules.json` holds editable keyword → category rules. Classification
 is deterministic and fully local. Low-confidence purchases are saved anyway,
-marked *Review Needed*, and can be renamed with `review_names.bat`.
+marked *Review Needed*, and can be renamed with `paperpull walmart review-names`.
 
 ## When Walmart changes its website
 
@@ -102,7 +102,7 @@ like now (Diagnostics folder), then adjust `walmart_site.py`.
   rate limiting. Never retries aggressively, never evades detection.
 - Sequential processing with polite randomized delays.
 - Progress written atomically after every purchase; CSV/JSON backed up to
-  `Backups\` before rewrites; interrupted runs resume with `resume.bat`.
+  `Backups\` before rewrites; interrupted runs resume with `paperpull walmart resume`.
 
 ## Tests
 

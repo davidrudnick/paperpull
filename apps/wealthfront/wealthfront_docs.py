@@ -20,6 +20,10 @@ sent to any external service.
 """
 from __future__ import annotations
 
+from paperpull_core import failure
+from paperpull_core import renaming
+from paperpull_core.journal import Journal
+from paperpull_core.api_census import Requests
 from paperpull_core.run_reporting import report_run_result
 
 import argparse
@@ -32,7 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from paperpull_core import doc_types, receipt_pdf
+from paperpull_core import doc_types, receipt_pdf, scope
 from paperpull_core import browser as browser_launcher
 import wealthfront_site as site
 from paperpull_core.models import State
@@ -97,6 +101,9 @@ class Document:
 
 
 class App:
+    _journal = None
+    _requests = None
+
     def __init__(self, args):
         self.args = args
         # --config lets one copy of the code serve several people/accounts:
@@ -184,6 +191,7 @@ class App:
             return self._work_page
         self._work_page = ctx.new_page() if self._cdp_mode else (
             ctx.pages[0] if ctx.pages else ctx.new_page())
+        self.requests
         return self._work_page
 
     def close(self):
@@ -205,18 +213,29 @@ class App:
     # -- session safety ----------------------------------------------------
 
     def check_session(self, page) -> None:
+        # Both of these used to wait at a prompt. Under the panel there is
+        # nobody to answer, and waiting there took the run down with an
+        # end-of-file rather than saying what had happened, so when there
+        # is no console the run stops on its own terms and says what to do
+        # about it. Progress is already saved either way (#48).
         challenge = site.detect_security_challenge(page)
         if challenge:
             self.progress.save(backup=True)
             print(f"\n!! {challenge}")
             print("Stopped. Please resolve it yourself in the browser window.")
             print("I will NOT attempt to bypass any security check.")
-            ask("Press Enter once the page looks normal (or Ctrl+C to quit)... ")
+            if browser_launcher.ask_or_none(
+                    "Press Enter once the page looks normal (or Ctrl+C to quit)... ") is None:
+                print("Then press Resume here to carry on from where this stopped.")
+                raise SystemExit(0)
         if site.looks_signed_out(page):
             self.progress.save(backup=True)
             print("\n!! Wealthfront appears to have signed you out.")
             print("Please sign in again in the open browser window.")
-            ask("Press Enter after you are signed in... ")
+            if browser_launcher.ask_or_none(
+                    "Press Enter after you are signed in... ") is None:
+                print("Then press Resume here to carry on from where this stopped.")
+                raise SystemExit(0)
             site.goto_documents(page)
 
     # -- commands ----------------------------------------------------------
@@ -266,7 +285,10 @@ class App:
             return False
         if a.year and not (doc.date or "").startswith(str(a.year)):
             return False
-        if a.start_date and (not doc.date or doc.date < a.start_date):
+        # Hard floor: never process documents before the configured start date
+        # (an archive that already holds the older years never re-fetches them).
+        floor = a.start_date or self.config.get("default_start_date")
+        if floor and (not doc.date or doc.date < floor):
             return False
         if a.end_date and (not doc.date or doc.date > a.end_date):
             return False
@@ -321,6 +343,13 @@ class App:
         if doc_types.wanted(doc_types.TAX, self.config):
             years = site.get_tax_years(page) or [""]
             log.info("Tax years offered: %s", years)
+            keep = scope.period_filter(self.args, self.config)
+            if keep is not None:
+                wanted = [y for y in years if keep(y)]
+                if len(wanted) < len(years):
+                    log.info("skipping %d tax year(s) outside the run's scope",
+                             len(years) - len(wanted))
+                years = wanted or [""]
             for year in years:
                 if year and not site.select_tax_year(page, year):
                     log.info("Could not select tax year %s", year)
@@ -417,10 +446,17 @@ class App:
                 print("  Already downloaded and verified - skipping.")
                 self.stats["skipped_completed"] += 1
                 continue
-            filename = build_pdf_filename(doc.date, doc.summary, "")
+            filename = build_pdf_filename(doc.date, doc.summary, "", record=doc)
             if dry_run:
                 print(f"  DRY RUN - would save: {filename}")
                 continue
+            # Which document the run is on, so a failure file says how far
+            # it got and whether it ever reached a second one.
+            try:
+                self.journal.op("next_item" if i > 1 else "open_item",
+                                "take a document", ordinal=i)
+            except Exception:
+                pass
             try:
                 self.download_one(page, doc, filename)
             except KeyboardInterrupt:
@@ -465,8 +501,19 @@ class App:
 
         saved = False
         # --- preferred: direct document URL -------------------------------
+        url = ""
         if doc.href:
-            url = doc.href if doc.href.startswith("http") else site.BASE + doc.href
+            # The href is read off the page, or out of a record written from
+            # one, and "starts with http" says nothing about where it points.
+            # Everything in this app reaches Wealthfront's own hosts, so an
+            # address that does not is a reason to stop rather than follow it.
+            candidate = doc.href if doc.href.startswith("http") else site.BASE + doc.href
+            if site.is_safe_url(candidate):
+                url = candidate
+            else:
+                log.warning("refusing a document URL that is not on Wealthfront: %s",
+                            candidate[:80])
+        if url:
             try:
                 with page.expect_download(timeout=45000) as dl:
                     # Navigating to a file URL makes goto() raise
@@ -537,6 +584,7 @@ class App:
                 self._record(doc, State.NEEDS_MANUAL_REVIEW,
                              notes="Downloaded archive contained no PDF")
                 self._write_row(doc, "Archive with no PDF", "Needs Manual Review")
+                self.write_failure('open the downloaded archive', 'the archive held no pdf')
                 self.stats["manual_review"] += 1
                 print("  !! Download was an archive with no PDF - manual review.")
                 return
@@ -564,6 +612,7 @@ class App:
             self._record(doc, State.NEEDS_MANUAL_REVIEW,
                          notes=f"PDF validation failed: {result.reason}")
             self._write_row(doc, "Validation failed", "Needs Manual Review")
+            self.write_failure('validate the saved pdf', 'the saved pdf did not validate')
             self.stats["manual_review"] += 1
             print(f"  !! Validation failed ({result.reason}); moved to Manual Review.")
             return
@@ -573,6 +622,10 @@ class App:
         for n, href in enumerate(extra_hrefs, start=2):
             try:
                 url = href if href.startswith("http") else site.BASE + href
+                if not site.is_safe_url(url):
+                    log.warning("refusing an extra file URL that is not on "
+                                "Wealthfront: %s", url[:80])
+                    continue
                 with page.expect_download(timeout=45000) as dl:
                     try:
                         page.goto(url)
@@ -601,6 +654,7 @@ class App:
         doc.pdf_size, doc.pdf_pages = result.size_bytes, result.page_count
         doc.downloaded_ok = True   # done for good, even if the file is deleted later
         self._record(doc, State.COMPLETED)
+        self.journal.checkpoint('a document is saved')
         self._write_row(doc, "Downloaded", "Completed")
         self.stats["new_files"].append(str(out_path))
         if doc.date:
@@ -705,6 +759,17 @@ class App:
         print(f"Resuming: {len(docs)} document(s) remaining.")
         self.process(docs, dry_run=self.args.dry_run)
 
+
+    def cmd_rename(self):
+        """Rename what is already downloaded, without downloading it again.
+
+        A naming scheme improves and the files on disk keep the old one.
+        Nothing about them needs fetching, only their names are wrong, so
+        nothing is asked of the provider here (#43, #49). A preview
+        unless --apply is given."""
+        self.stats["mode"] = "rename"
+        renaming.run_for(self, apply_changes=bool(getattr(self.args, "apply", False)))
+
     def cmd_verify(self):
         self.stats["mode"] = "verify"
         rows = self.index_csv.read_all()
@@ -724,6 +789,101 @@ class App:
                 row["Verified At"] = now_iso()
         self.index_csv.rewrite(rows)
         print(f"\nVerified {len(rows)} index rows; {bad} problem(s).")
+
+    @property
+    def requests(self):
+        """Which of the provider's own calls happened, and what came back.
+
+        Made on first use like the journal, and started at once, because
+        it only sees what arrives after it starts listening. An app that
+        drives an API rather than a page declares no selectors for the
+        census to count, and this is what it has instead."""
+        if self._requests is None:
+            self._requests = Requests(getattr(self, "_work_page", None),
+                                      getattr(site, "is_safe_url", None))
+            self._requests.start()
+        return self._requests
+
+    @property
+    def journal(self):
+        """The run's journal, made the first time anything writes to it.
+
+        Lazy, because a run that never opens a page has nothing to say
+        and an app that fails before the browser is up must not fail
+        differently because of this. It watches every selector the app
+        declares, since choosing between them is a decision nobody can
+        make before the first failure."""
+        if self._journal is None:
+            self._journal = Journal(getattr(self, "_work_page", None),
+                                    getattr(site, "FALLBACK", None))
+        return self._journal
+
+    def write_failure(self, step: str, reason: str, text: str = "",
+                      postmortem: dict = None) -> None:
+        """What the page looked like when this went wrong, to a file.
+
+        Written without anybody having to know to ask for it, because a
+        tester who has to be told to run a second command is a tester who
+        sends one file and waits a day for the request for the other.
+
+        One per run. A run where thirty documents fail for one reason
+        does not need thirty files, and the first is taken while the page
+        is still sitting on the thing that broke."""
+        if self.stats.get("failure_files"):
+            return
+        extra = {"postmortem": postmortem} if postmortem else None
+        # A checkpoint at the moment it gave up. It is also what makes the
+        # journal when nothing had written to it yet, and every tester file
+        # sent in on 2026-09-25 came back without one for that reason.
+        try:
+            if getattr(self, "_work_page", None) is not None:
+                self.journal.checkpoint("when the run gave up")
+        except Exception:
+            pass
+        path = failure.write_failure(
+            self.paths.diagnostics,
+            command=self.stats.get("mode") or "run",
+            step=step, reason=reason,
+            page=getattr(self, "_work_page", None),
+            selectors=getattr(site, "FALLBACK", None),
+            journal=self._journal,
+            requests=self._requests,
+            provider='Wealthfront', text=text, extra=extra)
+        if not path:
+            return
+        self.stats["failure_files"] = 1
+        try:
+            import json as _failure_json
+            said = failure.summarize(_failure_json.loads(
+                Path(path).read_text(encoding="utf-8")))
+        except Exception:
+            said = []
+        if said:
+            print("  What it noticed:")
+            for line in said[:6]:
+                print("    - %s" % line)
+        print("  Read it through, then attach it to this provider's issue on")
+        print("  GitHub. It is the one thing that saves a round of guessing.")
+
+    def write_survey(self) -> None:
+        """The survey Diagnose is safe to send.
+
+        Diagnose writes a detailed file for repairing this provider, and
+        that file holds the page's own title, the URL with its query
+        string, the text of the rows it found and the labels of the
+        controls. The panel said to attach it to an issue, which is not
+        something that file is for.
+
+        So this is written beside it, on the same list of what may leave
+        that the failure file uses, and it is the one to send.
+        """
+        failure.write_survey(
+            self.paths.diagnostics,
+            page=getattr(self, "_work_page", None),
+            selectors=getattr(site, "FALLBACK", None),
+            journal=self._journal,
+            requests=self._requests,
+            provider='Wealthfront')
 
     def cmd_diagnose(self):
         self.stats["mode"] = "diagnose"
@@ -777,11 +937,24 @@ class App:
         out = self.paths.diagnostics / "diagnose-documents.json"
         atomic_write_text(out, _json.dumps(info, indent=2))
         print(f"Wrote {out}")
+        print("  That is the detailed file, for repairing this provider. It")
+        print("  carries the page's own words, so it stays on this machine")
+        print("  unless you decide to send it.")
         print(f"Rows collected: {info.get('collected', '?')}")
         for s in info.get("samples", [])[:5]:
             print(f"  [{s['category']}] {s['date']}  {s['summary']}  <- {s['title'][:50]}")
 
     # -- summary -----------------------------------------------------------
+
+    def cmd_record(self):
+        """Record the path a person takes to a document, so this app can be
+        written or repaired to take the same one. Downloads nothing, and
+        captures no keystroke. The whole thing is in the core."""
+        self.stats["mode"] = "record"
+        from paperpull_core.recorder import record_session
+        record_session(self.page(), site, self.paths.diagnostics,
+                       provider='Wealthfront',
+                       owner=self.config.get("owner", ""))
 
     def write_run_summary(self):
         s = self.stats
@@ -829,8 +1002,13 @@ def build_parser() -> argparse.ArgumentParser:
             ("all", "download everything in scope (asks for confirmation)"),
             ("resume", "continue an interrupted run"),
             ("verify", "re-validate every saved PDF"),
-            ("diagnose", "dump the Documents page structure (no downloads)")]:
+            ("rename", "rename downloaded files to this app's current naming"),
+            ("diagnose", "dump the Documents page structure (no downloads)"),
+            ("record", "record your own path to a document, so this app can be repaired (downloads nothing)"),
+            ]:
         ap.add_argument(f"--{name}", action="store_true", help=help_text)
+    ap.add_argument("--apply", action="store_true",
+                    help="with --rename, actually rename (default is a preview)")
     ap.add_argument("--dry-run", action="store_true",
                     help="plan filenames but download nothing")
     ap.add_argument("--year", type=int)
@@ -871,8 +1049,13 @@ def main(argv=None):
             app.cmd_resume()
         elif args.verify:
             app.cmd_verify()
+        elif args.rename:
+            app.cmd_rename()
+        elif args.record:
+            app.cmd_record()
         elif args.diagnose:
             app.cmd_diagnose()
+            app.write_survey()
         elif args.dry_run:
             app.cmd_run("dry-run")
         else:
@@ -884,7 +1067,11 @@ def main(argv=None):
     finally:
         app.progress.save()
         app.discovery.save()
-        if app.stats["mode"]:
+        # A run that only looked at the page writes no summary. The
+        # summary rewrites new-this-run.txt, and for a mode that
+        # downloads nothing that means replacing the real list from
+        # the last download run with an empty one.
+        if app.stats["mode"] not in ("", "diagnose", "record"):
             app.write_run_summary()
         app.close()
     return 0

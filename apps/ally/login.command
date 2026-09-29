@@ -6,7 +6,7 @@ PY=.venv/bin/python
 if [ -x "../../.venv/bin/python" ]; then PY=../../.venv/bin/python; fi
 
 # No argument = your account. An argument = that named account, e.g.
-#   ./run_all.command spouse   ->  --config config.spouse.json
+#   ./login.command spouse   ->  --config config.spouse.json
 CFG=""
 if [ "${1:-}" != "" ]; then CFG="--config config.$1.json"; fi
 

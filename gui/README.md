@@ -1,10 +1,10 @@
-# PaperPull — Control panel (GUI)
+# PaperPull control panel (GUI)
 
 A small local web UI that wraps every downloader app: pick an app + account,
 click an action, and watch the live output. It only runs the same predefined
-commands the `.bat` files do — nothing from the page is passed to a shell.
+commands the `.bat` files do, nothing from the page is passed to a shell.
 
-![PaperPull control panel — pick an app, click Pilot, watch the live output](../docs/control-panel.gif)
+![PaperPull control panel, pick an app, click Pilot, watch the live output](../docs/control-panel.gif)
 
 ## Run it
 
@@ -19,7 +19,7 @@ Needs **Python 3.11+**, the same floor as the rest of PaperPull.
 
 Closing the browser tab stops the run it was showing. That is deliberate: a
 downloader driving your signed-in browser should not keep going once nothing
-is watching it. Nothing is lost — a document is only marked done after it is
+is watching it. Nothing is lost, a document is only marked done after it is
 saved, so the next run picks up exactly where this one stopped.
 
 Apps run from the panel get no stdin, so nothing can stop and wait for an
@@ -69,18 +69,48 @@ It finds any subfolder containing an entry script (`*_receipts.py` /
 
 | Button | What it runs |
 |--------|--------------|
-| **Login** | Opens that app's browser (Chromium, or Edge/Chrome for bot-protected sites) — **you** sign in and leave it open |
+| **Login** | Opens that app's browser (Chromium, or Edge/Chrome for bot-protected sites), **you** sign in and leave it open |
 | **Discover** | Enumerate available documents (downloads nothing) |
 | **Pilot** | Download the newest few as a test |
 | **Run All** | Download everything available (`--yes`, no prompt) |
 | **Resume** | Continue an interrupted run |
 | **Verify** | Re-check the downloaded PDFs |
 
+## Scope
+
+**All years** is the default. It walks everything, which is what keeps each
+archive's discovery complete for the Status tab. Pick one year, or a From
+and To date, and every action except Login gets the matching `--year`,
+`--start-date` and `--end-date`. On sites with a year picker (U.S. Bank,
+Chase, Target RedCard, Wealthfront, Target, Amazon) a scoped run skips the
+years outside its window, which is the difference between a three-second
+check and a minute of clicking through a decade. The choice is remembered
+in your browser, so glance at the hint under the row before a Run All.
+
+## Spreadsheet
+
+One button that writes `All Purchases.xlsx` beside your installs, every line
+item from every receipt archive (Amazon, Target, Walmart, Gap, and any second
+accounts), newest first, with an Orders sheet and a Summary of spend per
+provider per year. Pick one provider in the dropdown for `Amazon Purchases.xlsx`
+and so on, both accounts in the one file. Only providers with line items are
+offered. A statement archive has documents, not purchases, so it never appears. It is built from the order history the apps already keep,
+so no PDF is opened and it takes a second. **Show in folder** opens the file
+manager on it. Rebuilt from scratch each time, so edit a copy, not this file.
+A CSV is one click away for anything that is not Excel.
+
+**Statements** on the same tab writes `All Transactions.xlsx`, or one
+provider's, from the statement PDFs on disk. One row per transaction, and a
+Statements sheet that says whether each statement reconciles to its own
+printed balances. The first build of a big archive takes a few minutes and
+streams its progress. Each PDF is read once and remembered, so the next
+build takes seconds. Only archives with PDFs on disk are offered.
+
 ## Notes & limits
 
 - **Login is human-driven.** The panel opens the browser; you handle sign-in and
-  2FA yourself. That's by design — the tools never touch your password.
+  2FA yourself. That's by design, the tools never touch your password.
 - If a run hits a mid-run "please sign in again" prompt (e.g. an expired
-  session), it can't answer from here — it will end. Just Login again and Resume.
+  session), it can't answer from here, it will end. Just Login again and Resume.
 - One app needs its `.venv` set up (run its `setup.bat` once) before the panel
   can run it; the UI warns when a venv is missing.

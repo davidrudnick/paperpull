@@ -15,10 +15,13 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from paperpull_core.models import IN_STORE, ONLINE, Item, Purchase
+from paperpull_core.urls import is_safe_url as _host_allows
+from paperpull_core.dates import checked as _checked_date
+from paperpull_core.controls import safe_selects as _safe_selects
 from storage import now_iso
 
 log = logging.getLogger("target_receipts.site")
@@ -100,7 +103,27 @@ SECURITY_CHALLENGE_MARKERS = [
     "are you a robot", "captcha", "recaptcha", "access denied",
     "verification code", "let's make sure", "prove you're human",
     "security check", "we need to verify",
+    # RECORDED, from a tester's Discover on 0.39.1 (#48). Target's own bot
+    # check, a "Quick verification" window on /orders that asks to press and
+    # hold a button to confirm you're not a bot. None of the words above was
+    # on it, so the run kept paging and reloading the orders page while he
+    # was answering it. It is his to answer, and the app stops for it.
+    "quick verification", "press & hold", "press and hold",
+    "robot or human", "verify you are a human", "verify you are human",
+    "access to this page has been denied",
 ]
+
+# The words of a press and hold check, and the only markers looked for at the
+# end of a page and inside its frames. A check drawn over a long list lands
+# past the first five thousand characters, and its button sits in a frame of
+# its own. A page's own frames and footer carry a reCAPTCHA badge or a "try
+# again later" of their own, and one of those read as a check would stop
+# every run (#48, review).
+PRESS_AND_HOLD_MARKERS = [
+    "quick verification", "press & hold", "press and hold", "robot or human",
+    "verify you are a human", "verify you are human",
+]
+_FRAME_WORDS_JS = "() => document.body ? document.body.innerText.slice(0, 2000) : ''"
 
 RATE_LIMIT_MARKERS = [
     "too many requests", "rate limit", "try again later",
@@ -141,7 +164,7 @@ DATE_PATTERNS = [
     # "06/05/2026"
     (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"), "mdy_slash"),
     # "2026-06-05"
-    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "iso"),
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?!\d)"), "iso"),
 ]
 
 _MONTHS = {m: i + 1 for i, m in enumerate(
@@ -156,7 +179,7 @@ STATUS_WORDS_RE = re.compile(
 STORE_TRIP_RE = re.compile(r"store\s+trip\s+at\s+([^\n]+)", re.I)
 
 
-def parse_date(text: str) -> Optional[str]:
+def _parse_date_from_page(text: str) -> Optional[str]:
     """Extract the first date in *text* as YYYY-MM-DD."""
     if not text:
         return None
@@ -175,6 +198,15 @@ def parse_date(text: str) -> Optional[str]:
         except (KeyError, ValueError):
             continue
     return None
+
+
+def parse_date(text):
+    """The date this provider's page is showing, as YYYY-MM-DD.
+
+    The reading is below, unchanged. This only refuses to believe a result
+    that names a day which does not exist, because a reference number is
+    shaped like a date and used to be taken for one."""
+    return _checked_date(_parse_date_from_page(text), None)
 
 
 def parse_money(text: str) -> str:
@@ -212,7 +244,10 @@ def looks_signed_out(page) -> bool:
 
 
 def detect_security_challenge(page) -> Optional[str]:
-    """Return a description if a CAPTCHA / verification / block page appears."""
+    """Return a description if a CAPTCHA / verification / block page appears.
+
+    The end of the page and the frames that show are read as well, and only
+    read, for the words of a press and hold check alone (#48)."""
     try:
         title = (page.title() or "").lower()
     except Exception:
@@ -228,7 +263,32 @@ def detect_security_challenge(page) -> Optional[str]:
     for marker in RATE_LIMIT_MARKERS:
         if marker in haystack:
             return f"Possible rate limiting detected: '{marker}'"
+    later = body[-5000:] + "\n" + _frame_words(page)
+    for marker in PRESS_AND_HOLD_MARKERS:
+        if marker in later:
+            return f"Security challenge detected: '{marker}'"
     return None
+
+
+def _frame_words(page) -> str:
+    """The words of the page's frames that show on the page, the newest
+    first, since a check that comes partway through is attached last. Each
+    is read once and without waiting, so a frame with no body costs nothing
+    (review)."""
+    out = []
+    try:
+        frames = list(page.frames[1:])
+    except Exception:
+        return ""
+    for frame in reversed(frames[-8:]):
+        try:
+            box = frame.frame_element().bounding_box()
+            if not box or box["width"] < 10 or box["height"] < 10:
+                continue
+            out.append((frame.evaluate(_FRAME_WORDS_JS) or "").lower())
+        except Exception:
+            continue
+    return "\n".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -301,9 +361,10 @@ YEAR_OPTION_RE = re.compile(
 def get_year_options(page) -> List[str]:
     """Return the year / date-range options of a real <select> filter, if one
     exists. Target's current history page uses 'Load more purchases' instead,
-    so this usually returns [] — that's fine and handled by the caller."""
+    so this usually returns [], that's fine and handled by the caller."""
     try:
-        for select in page.locator("select").all():
+        for select, _identity in _safe_selects(page, FORBIDDEN_CONTROL_RE,
+                                               signed_out=looks_signed_out):
             options = [o.strip() for o in select.locator("option").all_inner_texts()]
             candidate = [o for o in options if YEAR_OPTION_RE.fullmatch(o)]
             # only trust selects where most options look like years/ranges
@@ -316,9 +377,13 @@ def get_year_options(page) -> List[str]:
 
 def select_year_option(page, option_text: str) -> bool:
     """Choose a year / date-range option in the <select> filter that
-    get_year_options() found. Select elements only — never clicks buttons."""
+    get_year_options() found. Select elements only, never clicks buttons."""
     try:
-        for select in page.locator("select").all():
+        # Every dropdown on the page is a candidate here, matched only by an
+        # option's text, so the filter comes first. On Ally this same shape of
+        # lookup once matched a money TRANSFER widget's <select> and set it.
+        for select, _identity in _safe_selects(page, FORBIDDEN_CONTROL_RE,
+                                               signed_out=looks_signed_out):
             options = select.locator("option").all_inner_texts()
             if any(option_text.strip() == o.strip() for o in options):
                 select.select_option(label=option_text.strip())
@@ -332,10 +397,16 @@ def select_year_option(page, option_text: str) -> bool:
 def load_all_cards(page, purchase_type: str = ONLINE,
                    delay_ms: int = 1500, max_rounds: int = 200) -> int:
     """Scroll / click Load More until the purchase list stops growing.
-    Returns the final card count."""
+    Returns the final card count.
+
+    Target's bot check can come up partway through, and the paging stops at
+    once when it does, before another press or scroll reaches the page. The
+    caller sees the check and stops the run (#48)."""
     last_count = -1
     stable_rounds = 0
     for _ in range(max_rounds):
+        if detect_security_challenge(page):
+            break
         count = _card_count(page, purchase_type)
         if count == last_count:
             stable_rounds += 1
@@ -459,6 +530,13 @@ def card_to_purchase(card: RawCard, purchase_type: str,
     if purchase_type == ONLINE and m:
         order_number = m.group(1)
     url = card.href if card.href.startswith("http") else base_url + card.href
+    # "starts with http" says nothing about WHERE. An absolute href on the
+    # orders page is followed with the signed-in browser and then stored and
+    # followed again on later runs, so the host is checked here, once, before
+    # the address is ever written down.
+    if not is_safe_url(url):
+        log.warning("refusing an order link that leads off Target: %s", url[:80])
+        return None
     store = ""
     sm = STORE_TRIP_RE.search(card.text or "")
     if sm:
@@ -480,6 +558,13 @@ def card_to_purchase(card: RawCard, purchase_type: str,
 # ---------------------------------------------------------------------------
 
 def goto_details(page, purchase: Purchase) -> None:
+    # The address can also arrive from a record written by an older version,
+    # or from `details_url = page.url` after the site redirected somewhere.
+    # Raising is handled: the caller retries once and then files the purchase
+    # for manual review, which is the right outcome for a record like this.
+    if not is_safe_url(purchase.details_url):
+        raise ValueError("refusing to open an order page that is not on Target: %s"
+                         % (purchase.details_url or "")[:80])
     page.goto(purchase.details_url, wait_until="domcontentloaded", timeout=60000)
     page.wait_for_timeout(3000)
 
@@ -561,7 +646,7 @@ _NON_ITEM_NAME_RE = re.compile(
     r"start a return|buy it again|rate & review|get help|view your receipt|"
     r"purchased on|placed at)", re.I)
 _LOCATION_LINE_RE = re.compile(r"^[A-Z][A-Za-z .'-]+,\s*[A-Z]{2}(\s+\d{5})?$")
-# "Jul 22, 4:48 PM" / "Tue, Jul 21" — date-ish lines with no year
+# "Jul 22, 4:48 PM" / "Tue, Jul 21", date-ish lines with no year
 _MONTH_DAY_RE = re.compile(
     r"^((Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*,?\s+)?"
     r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}\b", re.I)
@@ -784,7 +869,7 @@ def find_invoice_controls(page) -> list:
 
 def find_printing_frame(page, wait_ms: int = 6000):
     """Find the hidden iframe from which Target called print() (suppressed by
-    our init script — the flag is set on the iframe's own window). Falls back
+    our init script, the flag is set on the iframe's own window). Falls back
     to any iframe holding substantial receipt content."""
     rounds = max(1, wait_ms // 500)
     for _ in range(rounds):
@@ -924,15 +1009,8 @@ ALLOWED_HOSTS = {'target.com'}
 
 
 def is_safe_url(url: str) -> bool:
-    """True only for an https URL on one of this provider's own hosts."""
-    from urllib.parse import urlparse
-    try:
-        got = urlparse(url or "")
-    except ValueError:
-        return False
-    if got.scheme != "https" or not got.hostname:
-        return False
-    if got.username or got.password:
-        return False
-    host = got.hostname.lower().rstrip(".")
-    return any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS)
+    """True only for an https URL on one of this provider's own hosts.
+
+    The check itself lives in the core, so all of them answer the same way.
+    This app keeps the hosts, which is the part that really is its own."""
+    return _host_allows(url, ALLOWED_HOSTS)

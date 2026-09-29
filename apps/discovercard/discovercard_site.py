@@ -49,7 +49,7 @@ WHAT THE LIVE PROBE ESTABLISHED (2026-08-19):
     from a template, so a change to the query string cannot silently fetch the
     wrong period. The served filename also carries the card's last four, which
     is the only place a single-card login states them.
-  * The neighbouring "Download" control opens a MODAL DIALOG (a transactions
+  * The neighboring "Download" control opens a MODAL DIALOG (a transactions
     export, not the statement PDF), and "Print" opens a popup. Neither is used:
     answering a dialog is exactly what this project never does.
   * History observed: 24 statements, the oldest .. the newest - about two
@@ -89,6 +89,10 @@ from typing import List, Optional, Tuple
 from urllib.parse import urlsplit
 
 from paperpull_core import controls as _controls
+from paperpull_core.urls import is_safe_url as _host_allows
+from paperpull_core.controls import click_next_page as _click_next_page
+from paperpull_core.dates import last_day as _last_day
+from paperpull_core.dates import checked as _checked_date
 
 log = logging.getLogger("discovercard_docs.site")
 
@@ -211,27 +215,6 @@ FALLBACK = {
     "show_more": "button, a",
 }
 
-# A row control that opens/downloads one statement. Discover's form is UNKNOWN.
-#
-# The specific selectors below are tried first, then ROW_CONTROL_FALLBACK_SEL
-# considers any button/link in the row. That two-stage shape is not padding:
-# on ALLY the control turned out to be a plain <button> with no aria-label and
-# no href, whose text was just "Statement" - the words "Download statement
-# for:" lived in a separate visually-hidden element - so keying on aria-label
-# or on the word "Download" found nothing at all. Expect Discover to be
-# similarly unhelpful in its own way.
-#
-# Either way the element's own accessible name must clear is_safe_control(),
-# so widening the net does not widen what may be clicked.
-ROW_CONTROL_SEL = ("a[href$='.pdf'], a[download], "
-                   "a[aria-label*='statement' i], a[aria-label*='download' i], "
-                   "button[aria-label*='statement' i], button[aria-label*='download' i], "
-                   "button[aria-label*='view' i], "
-                   "a:has-text('Download'), a:has-text('View'), "
-                   "button:has-text('Download'), button:has-text('View'), "
-                   "button:has-text('PDF'), a:has-text('PDF')")
-ROW_CONTROL_FALLBACK_SEL = "button, a"
-
 # ---------------------------------------------------------------------------
 # Date parsing (shared with the other projects)
 # ---------------------------------------------------------------------------
@@ -240,7 +223,7 @@ DATE_PATTERNS = [
                 r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
                 r"Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+(\d{4})", re.I), "mdY"),
     (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"), "mdy_slash"),
-    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "iso"),
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?!\d)"), "iso"),
 ]
 _MONTHS = {m: i + 1 for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
@@ -250,17 +233,9 @@ MONTH_YEAR_RE = re.compile(
     r"\s+(\d{4})", re.I)
 QUARTER_RE = re.compile(r"\bQ([1-4])\s*[' ]?\s*(\d{4})\b", re.I)
 YEAR_RE = re.compile(r"\b(19|20)(\d{2})\b")
-_LAST_DAY = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30,
-             7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31}
 
 
-def _last_day(year: int, month: int) -> int:
-    if month == 2 and (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
-        return 29
-    return _LAST_DAY[month]
-
-
-def parse_date(text: str) -> Optional[str]:
+def _parse_date_from_page(text: str) -> Optional[str]:
     if not text:
         return None
     for pattern, kind in DATE_PATTERNS:
@@ -277,6 +252,15 @@ def parse_date(text: str) -> Optional[str]:
         except (KeyError, ValueError):
             continue
     return None
+
+
+def parse_date(text):
+    """The date this provider's page is showing, as YYYY-MM-DD.
+
+    The reading is below, unchanged. This only refuses to believe a result
+    that names a day which does not exist, because a reference number is
+    shaped like a date and used to be taken for one."""
+    return _checked_date(_parse_date_from_page(text), None)
 
 
 def parse_period_date(text: str) -> Tuple[Optional[str], str]:
@@ -617,19 +601,15 @@ def expand_all(page) -> None:
 
 
 def next_page(page) -> bool:
-    try:
-        loc = page.locator(FALLBACK["next_page"])
-        if loc.count() > 0 and loc.first.is_visible() and loc.first.is_enabled():
-            label = (loc.first.inner_text(timeout=800) or "") + \
-                (loc.first.get_attribute("aria-label") or "")
-            if FORBIDDEN_CONTROL_RE.search(label):
-                return False
-            loc.first.click()
-            page.wait_for_timeout(2500)
-            return True
-    except Exception:
-        pass
-    return False
+    """One page forward, through a control that says it pages forward.
+
+    Judged by an allowlist in the core rather than by FORBIDDEN_CONTROL_RE,
+    because that blocklist refuses the word "next". Correctly, since "Next"
+    is also what a wizard's commit button says, and fatally here, because it
+    meant this could never page forward at all and the run reported success
+    having seen only the first page.
+    """
+    return _click_next_page(page, FALLBACK["next_page"])
 
 
 @dataclass
@@ -719,7 +699,7 @@ def collect_documents(page) -> List[RawDoc]:
 # was an account list (id "fromAccount"), indistinguishable from a statements
 # account picker by its options alone - and the first live probe found exactly
 # that and tried to set it. Selecting an option in a transfer form is not
-# read-only behaviour even when nothing is submitted.
+# read-only behavior even when nothing is submitted.
 #
 # A card dashboard has the same hazard in its "pay from" picker, so every
 # <select> is identity-checked before it is read OR written, and the check
@@ -919,33 +899,6 @@ def _write_if_pdf(data: bytes, out_path: Path) -> bool:
     return True
 
 
-def _row_download_control(row):
-    """The row's own download control, or None.
-
-    Tries the explicit selectors first, then any button/link in the row -
-    Discover's control announces itself only through its text. In BOTH passes the
-    control's own accessible name must pass is_safe_control(), so a money
-    control in a row could never be picked up by the wider pass.
-    """
-    for sel in (ROW_CONTROL_SEL, ROW_CONTROL_FALLBACK_SEL):
-        try:
-            ctrl = row.locator(sel)
-            n = min(ctrl.count(), 8)
-        except Exception:
-            continue
-        for j in range(n):
-            c = ctrl.nth(j)
-            try:
-                label = ((c.inner_text(timeout=500) or "") + " " +
-                         (c.get_attribute("aria-label") or "") + " " +
-                         (c.get_attribute("href") or ""))
-            except Exception:
-                continue
-            if is_safe_control(label):
-                return c
-    return None
-
-
 # ===========================================================================
 # Downloading a statement. CONFIRMED LIVE 2026-08-19.
 #
@@ -1079,13 +1032,6 @@ def _redact(value):
     if isinstance(value, str):
         return _DIGITS_RE.sub(lambda m: m.group(0)[:2] + "…" + m.group(0)[-2:], value)
     return value
-
-
-# NOT a known Discover endpoint - a candidate shape only, so that IF Discover
-# turns out to answer a document list as JSON, probe_statements_api reports its
-# records. probe_api (below) is the one that finds endpoints without guessing.
-DOCREF_API_RE = re.compile(r"/(documents?|statements?|docref)[a-z/]*/(list|search)|"
-                           r"/statements?\?|/documents?\?", re.I)
 
 
 def probe_statements_api(page) -> dict:
@@ -1325,15 +1271,8 @@ ALLOWED_HOSTS = {'discover.com'}
 
 
 def is_safe_url(url: str) -> bool:
-    """True only for an https URL on one of this provider's own hosts."""
-    from urllib.parse import urlparse
-    try:
-        got = urlparse(url or "")
-    except ValueError:
-        return False
-    if got.scheme != "https" or not got.hostname:
-        return False
-    if got.username or got.password:
-        return False
-    host = got.hostname.lower().rstrip(".")
-    return any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS)
+    """True only for an https URL on one of this provider's own hosts.
+
+    The check itself lives in the core, so all of them answer the same way.
+    This app keeps the hosts, which is the part that really is its own."""
+    return _host_allows(url, ALLOWED_HOSTS)

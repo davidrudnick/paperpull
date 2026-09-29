@@ -76,6 +76,11 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from paperpull_core import controls as _controls
+from paperpull_core.urls import is_safe_url as _host_allows
+from paperpull_core.controls import click_next_page as _click_next_page
+from paperpull_core.dates import last_day as _last_day
+from paperpull_core.capture import fetch_as_b64 as _fetch_as_b64
+from paperpull_core.dates import checked as _checked_date
 
 log = logging.getLogger("ally_docs.site")
 
@@ -198,7 +203,7 @@ DATE_PATTERNS = [
                 r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
                 r"Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+(\d{4})", re.I), "mdY"),
     (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"), "mdy_slash"),
-    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "iso"),
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?!\d)"), "iso"),
 ]
 _MONTHS = {m: i + 1 for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
@@ -208,17 +213,9 @@ MONTH_YEAR_RE = re.compile(
     r"\s+(\d{4})", re.I)
 QUARTER_RE = re.compile(r"\bQ([1-4])\s*[' ]?\s*(\d{4})\b", re.I)
 YEAR_RE = re.compile(r"\b(19|20)(\d{2})\b")
-_LAST_DAY = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30,
-             7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31}
 
 
-def _last_day(year: int, month: int) -> int:
-    if month == 2 and (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
-        return 29
-    return _LAST_DAY[month]
-
-
-def parse_date(text: str) -> Optional[str]:
+def _parse_date_from_page(text: str) -> Optional[str]:
     if not text:
         return None
     for pattern, kind in DATE_PATTERNS:
@@ -235,6 +232,15 @@ def parse_date(text: str) -> Optional[str]:
         except (KeyError, ValueError):
             continue
     return None
+
+
+def parse_date(text):
+    """The date this provider's page is showing, as YYYY-MM-DD.
+
+    The reading is below, unchanged. This only refuses to believe a result
+    that names a day which does not exist, because a reference number is
+    shaped like a date and used to be taken for one."""
+    return _checked_date(_parse_date_from_page(text), None)
 
 
 def parse_period_date(text: str) -> Tuple[Optional[str], str]:
@@ -482,19 +488,15 @@ def expand_all(page) -> None:
 
 
 def next_page(page) -> bool:
-    try:
-        loc = page.locator(FALLBACK["next_page"])
-        if loc.count() > 0 and loc.first.is_visible() and loc.first.is_enabled():
-            label = (loc.first.inner_text(timeout=800) or "") + \
-                (loc.first.get_attribute("aria-label") or "")
-            if FORBIDDEN_CONTROL_RE.search(label):
-                return False
-            loc.first.click()
-            page.wait_for_timeout(2500)
-            return True
-    except Exception:
-        pass
-    return False
+    """One page forward, through a control that says it pages forward.
+
+    Judged by an allowlist in the core rather than by FORBIDDEN_CONTROL_RE,
+    because that blocklist refuses the word "next". Correctly, since "Next"
+    is also what a wizard's commit button says, and fatally here, because it
+    meant this could never page forward at all and the run reported success
+    having seen only the first page.
+    """
+    return _click_next_page(page, FALLBACK["next_page"])
 
 
 @dataclass
@@ -582,7 +584,7 @@ def collect_documents(page) -> List[RawDoc]:
 # widget whose first <select> is an account list (id/allytmfn "fromAccount") -
 # indistinguishable from a statements account picker by its options alone. The
 # 2026-08-18 probe found exactly that and tried to set it. Selecting an option
-# in a transfer form is not read-only behaviour even when nothing is submitted,
+# in a transfer form is not read-only behavior even when nothing is submitted,
 # so every <select> is identity-checked before it is read OR written.
 # ---------------------------------------------------------------------------
 _ACCOUNT_HINT_RE = re.compile(
@@ -624,7 +626,6 @@ def _safe_selects(page, limit: int = 12):
 
 def describe_selects(page, limit: int = 12):
     return _controls.describe_selects(page, FORBIDDEN_CONTROL_RE, limit=limit)
-
 
 
 def account_select(page):
@@ -891,13 +892,6 @@ def ally_collect(page) -> List[dict]:
 # session cookies). Whichever wins, the bytes are checked for %PDF- before the
 # file is written.
 # ---------------------------------------------------------------------------
-_FETCH_AS_B64 = r"""async (u) => {
-    const r = await fetch(u, {credentials: 'include'});
-    if (!r.ok) return null;
-    const buf = new Uint8Array(await r.arrayBuffer());
-    let s = ''; for (let i = 0; i < buf.length; i++) s += String.fromCharCode(buf[i]);
-    return btoa(s);
-}"""
 
 
 def _write_if_pdf(data: bytes, out_path: Path) -> bool:
@@ -908,12 +902,23 @@ def _write_if_pdf(data: bytes, out_path: Path) -> bool:
 
 
 def _date_needles(date: str) -> List[str]:
-    """The ways this ISO date can appear in a row."""
+    """The ways this ISO date can appear in a row.
+
+    A day below ten is looked for both ways, "September 6, 2026" and
+    "September 06, 2026". Rows are matched by substring and neither
+    spelling contains the other. Ally writes the zero (#56), and every
+    date the tests used was the 16th, where the two spellings agree.
+    """
     y, m, d = date[:4], date[5:7], date[8:10]
     month = ["January", "February", "March", "April", "May", "June", "July",
              "August", "September", "October", "November", "December"][int(m) - 1]
-    return [f"{int(m)}/{int(d)}/{y}", f"{m}/{d}/{y}",
-            f"{month} {int(d)}, {y}", f"{month[:3]} {int(d)}, {y}", date]
+    needles = [f"{int(m)}/{int(d)}/{y}", f"{m}/{d}/{y}"]
+    for name in (month, month[:3]):
+        for day in (str(int(d)), d):
+            needles.append(f"{name} {day}, {y}")
+    needles.append(date)
+    # a day of two digits is spelled one way, so keep each needle once
+    return list(dict.fromkeys(needles))
 
 
 def _row_download_control(row):
@@ -977,7 +982,7 @@ def _find_row_control(page, date: str, account: str = "", occurrence: int = 0):
     * A TRUST statement carries the registration in its row label
       ("Download statement for: <name> Trust Statement"), so `account` picks
       it out exactly.
-    * Everything else is labelled identically ("Download statement for:
+    * Everything else is labeled identically ("Download statement for:
       Statement"), several per date, differing only by documentId. Nothing on
       the page distinguishes them, so the only handle available is position:
       the Nth such row for that date. `occurrence` selects it, and the trust
@@ -999,7 +1004,7 @@ def _find_row_control(page, date: str, account: str = "", occurrence: int = 0):
         log.info("no row for registration %r on %s", account[:40], date)
         return None
 
-    # Ambiguous set: drop the registration-labelled rows, then take the Nth.
+    # Ambiguous set: drop the registration-labeled rows, then take the Nth.
     plain = [(row, text) for row, text in rows
              if not re.search(r"\btrust\b", text, re.I)]
     if occurrence < len(plain):
@@ -1007,18 +1012,6 @@ def _find_row_control(page, date: str, account: str = "", occurrence: int = 0):
     log.info("wanted statement #%d of %d on %s - not present",
              occurrence + 1, len(plain), date)
     return None
-
-
-# Clicking a row makes the SPA call GET /acs/v1/bank-statements/<documentId>,
-# and that response is the PDF. Fetching it ourselves does NOT work: the
-# endpoint needs the Authorization header the SPA attaches in JS, and a
-# cookie-only fetch comes back non-2xx (tried live 2026-08-18 - every id
-# returned no body). So the row still has to be clicked.
-#
-# What the endpoint DOES give us is proof. The id in that request says which
-# statement the site actually served, so a download can be checked against the
-# statement we meant to fetch instead of trusting that row N is record N.
-STATEMENT_BY_ID_RE = re.compile(r"/acs/v\d+/bank-statements/(\w+)", re.I)
 # Any /acs/ endpoint that serves ONE document by id - statements today,
 # tax forms on whatever path Ally uses for them.
 SERVED_DOC_ID_RE = re.compile(r"/acs/v\d+/[a-z-]+/(\w{6,})", re.I)
@@ -1131,7 +1124,7 @@ def _download_via_row(page, ctx, account: str, date: str, out_path: Path,
             log.error("refusing an href that is not on Ally's host")
             return False
         try:
-            b64 = page.evaluate(_FETCH_AS_B64, url)
+            b64 = _fetch_as_b64(page, url)
             if b64 and _write_if_pdf(base64.b64decode(b64), out_path):
                 log.info("captured via direct href")
                 return True
@@ -1170,8 +1163,8 @@ def _download_via_row(page, ctx, account: str, date: str, out_path: Path,
     try:
         new_page.wait_for_load_state("domcontentloaded", timeout=15000)
         url = new_page.url or ""
-        b64 = page.evaluate(_FETCH_AS_B64, url) if url.startswith("blob:") else \
-            new_page.evaluate(_FETCH_AS_B64, url)
+        b64 = _fetch_as_b64(page, url) if url.startswith("blob:") else \
+            _fetch_as_b64(new_page, url)
         if b64:
             ok = _write_if_pdf(base64.b64decode(b64), out_path)
             if ok:
@@ -1351,7 +1344,7 @@ def probe_api(page, seconds: int = 25) -> List[dict]:
 # the person who wrote it. A customer with one account yields one row.
 #
 # Everything here is plain string matching: deterministic, offline, and it
-# returns nothing rather than a guess when the layout is not recognised.
+# returns nothing rather than a guess when the layout is not recognized.
 # ===========================================================================
 STMT_TABLE_START_RE = re.compile(r"account\s+name\s+account\s+number", re.I)
 STMT_TABLE_END_RE = re.compile(r"^\s*total\s+account\s+balances", re.I)
@@ -1462,7 +1455,7 @@ def normalize_name(name: str) -> str:
 #
 # The payload shape is read tolerantly for the same reason: the list is found
 # by looking for the array in the response, and each record's id/name/date by
-# trying the key names Ally is known to use. Anything unrecognised is skipped
+# trying the key names Ally is known to use. Anything unrecognized is skipped
 # and logged rather than guessed at.
 # ===========================================================================
 # The form designation as it appears in a tax row: "1099-INT", "1098-E",
@@ -1692,7 +1685,7 @@ def _find_tax_row_control(page, title: str, account: str = "",
         return None
 
     # No registration on this record: take the Nth row that names none either,
-    # so it can never collide with a registration-labelled form.
+    # so it can never collide with a registration-labeled form.
     plain = [(row, text) for row, text in matches
              if not re.search(r"\btrust\b", text, re.I)]
     if occurrence < len(plain):
@@ -1712,15 +1705,8 @@ ALLOWED_HOSTS = {'ally.com'}
 
 
 def is_safe_url(url: str) -> bool:
-    """True only for an https URL on one of this provider's own hosts."""
-    from urllib.parse import urlparse
-    try:
-        got = urlparse(url or "")
-    except ValueError:
-        return False
-    if got.scheme != "https" or not got.hostname:
-        return False
-    if got.username or got.password:
-        return False
-    host = got.hostname.lower().rstrip(".")
-    return any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS)
+    """True only for an https URL on one of this provider's own hosts.
+
+    The check itself lives in the core, so all of them answer the same way.
+    This app keeps the hosts, which is the part that really is its own."""
+    return _host_allows(url, ALLOWED_HOSTS)

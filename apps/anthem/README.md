@@ -1,19 +1,19 @@
-# Anthem BCBS — member document downloader (READ-ONLY)
+# Anthem BCBS member document downloader (READ-ONLY)
 
 Downloads your Anthem Blue Cross Blue Shield member documents as PDFs, read-only
 and delete-safe, part of [PaperPull](../../README.md):
 
-- **Explanation of Benefits (EOB)** — Medical, Pharmacy and Chiropractic (and EOB
+- **Explanation of Benefits (EOB)**, Medical, Pharmacy and Chiropractic (and EOB
   Checks).
-- **Member documents** — plan and benefit documents across **every coverage year**
+- **Member documents**, plan and benefit documents across **every coverage year**
   the portal keeps (plan confirmations, Evidence of Coverage, Certificate of
   Coverage, and a 1095-B tax form if the account has one).
-- **ID / insurance cards** — each covered member's digital card, front and back,
+- **ID / insurance cards**, each covered member's digital card, front and back,
   as one PDF per card.
-- **Letters** — every secure Message Center letter, read and unread.
+- **Letters**, every secure Message Center letter, read and unread.
 
 Every one of these is fetched by the portal's own read-only member API from inside
-your signed-in page — **nothing on the page is ever clicked, submitted or
+your signed-in page, **nothing on the page is ever clicked, submitted or
 confirmed.**
 
 > **Built from a logged-in recon of the live portal (2026-08-31); not yet run
@@ -21,7 +21,7 @@ confirmed.**
 > confirmed against the live site, but the API's **response field names were not
 > observed** (the recon harness blocked the replay). The collector parses them
 > defensively and will name the real fields on the first pilot. Run
-> `diagnose.bat`, then `run_pilot.bat`, and check the PDFs before a full run.
+> `paperpull anthem diagnose`, then `paperpull anthem pilot`, and check the PDFs before a full run.
 >
 > One app, many states. Anthem/Elevance operates the Blue Cross Blue Shield
 > plans in 14 states (CO, CT, GA, IN, KY, ME, MO, NV, NH, NY, OH, VA, WI); they
@@ -46,8 +46,8 @@ The member portal can change your PCP, request an ID card, refill a
 prescription, appeal a claim, enroll you in paperless delivery, pay a premium
 and message your care team. This tool does none of it. Concretely:
 
-- **Nothing on the page is clicked.** Every document — EOB, member document, ID
-  card and letter — is fetched by the portal's own API from inside the signed-in
+- **Nothing on the page is clicked.** Every document, EOB, member document, ID
+  card and letter, is fetched by the portal's own API from inside the signed-in
   page. There is no click, no form submit, no dialog confirmation, and the only
   navigation is to a read-only page to capture the session; a test enforces that
   the code never fills, submits, confirms or clicks anything.
@@ -58,23 +58,23 @@ and message your care team. This tool does none of it. Concretely:
 - **A document is fetched by a validated identity, never a URL.** The identity
   is `claimType|claimId|docKind`: the claim type and kind must be ones this app
   knows and the claim number is validated to Anthem's alphanumeric shape, so the
-  request is built from values this app recognises rather than any stored string.
+  request is built from values this app recognizes rather than any stored string.
 - **The opaque per-document token never leaves the page.** Anthem authorises a
   PDF fetch with a per-document `eobId` token minted into the page. It is read
   and spent inside the page in one expression and is **never stored**; the
   identity above is looked up fresh at download time.
-- **A session that expires — or an Akamai block page — stops the run** and says
+- **A session that expires, or an Akamai block page, stops the run** and says
   so, rather than filing everything as "needs manual review" and exiting as
   though it worked.
 
 ## Setup
 
 ```bat
-setup.bat                 REM one-time: venv + Playwright
-login.bat                 REM opens a real browser on port 9242 - sign in yourself
-diagnose.bat              REM read-only look at what is on the page; downloads NOTHING
-run_pilot.bat             REM download the newest few as a test, then stop
-run_all.bat               REM download everything in scope (asks for YES)
+setup.bat                         REM one-time: venv + Playwright
+login.bat                         REM opens a real browser on port 9242 - sign in yourself
+paperpull anthem diagnose         REM read-only look at what is on the page; downloads NOTHING
+paperpull anthem pilot            REM download the newest few as a test, then stop
+paperpull anthem all              REM download everything in scope (asks for YES)
 ```
 
 `login.bat` opens Anthem's sign-in page (`www.anthem.com/account-login/`). Sign
@@ -85,7 +85,7 @@ The tool attaches to that already-signed-in member tab and reads only what you
 can see. It never handles your credentials or your MFA code.
 
 If a run stops saying the session expired or was blocked, sign in again and use
-`resume.bat` — finished documents are never re-fetched.
+`paperpull anthem resume`, finished documents are never re-fetched.
 
 ## Documents captured
 
@@ -97,10 +97,10 @@ If a run stops saying the session expired or was blocked, sign in again and use
 | `Tax Documents\` | 1095-B health-coverage form, if the account has one (created on demand) |
 | `ID Cards\` | Each covered member's digital ID / insurance card (front and back) as one PDF, named per member (created on demand) |
 | `Letters\` | Secure Message Center letters, one PDF per message (created on demand) |
-| `Other Documents\` | Anything else recognised but unrouted (created on demand) |
+| `Other Documents\` | Anything else recognized but unrouted (created on demand) |
 | `Manual Review\` | Files that failed PDF validation |
 
-Every surface is fetched the same way — by the portal's own authenticated member
+Every surface is fetched the same way, by the portal's own authenticated member
 API, from inside the signed-in page, nothing clicked. `run_all` (and `--all`)
 fetches **all** of them. Each also has its own command:
 
@@ -112,7 +112,7 @@ python anthem_docs.py --letters       secure Message Center letters
 
 The member documents span **all coverage periods** the portal exposes, so prior
 years' plan and tax documents come down alongside the current year's. A document
-already downloaded once is never re-fetched — even a prior-year one — so a later
+already downloaded once is never re-fetched, even a prior-year one, so a later
 run only picks up what is new.
 
 **Letters are read-safe.** The secure-message list already carries every message's
@@ -128,14 +128,14 @@ share a date distinct. An EOB and its reimbursement EOB Check stay distinct too.
 from what is expected, the pilot's filenames will lack the name and the real
 field is added then.) Naming rules live in `document_rules.json` (editable).
 
-EOB history is **capped at 24 months** — the API returns nothing for a start date
+EOB history is **capped at 24 months**, the API returns nothing for a start date
 older than ~25 months (confirmed live), so older EOBs are not available through
 this portal.
 
 ### Not captured yet
 
 - **Claims summaries** (the claims list, separate from the EOB Center).
-- **EOB history older than ~24 months** — the EOB API returns nothing for a start
+- **EOB history older than ~24 months**, the EOB API returns nothing for a start
   date older than about 25 months (see below). Member documents, ID cards and
   letters have no such window and come down in full.
 
@@ -145,7 +145,7 @@ EOBs are among the most sensitive documents this project handles: they carry a
 member ID, provider names, dates of service, procedure descriptions and claim
 amounts. They are saved to the folder you set as `output_dir` in `config.json`.
 Keep it somewhere safe, and if that folder syncs to a cloud drive, know these
-documents go with it. `diagnose.bat` writes no screenshot, deliberately, so a
+documents go with it. `paperpull anthem diagnose` writes no screenshot, deliberately, so a
 page full of claims does not end up in a file that is easy to attach to a bug
 report by accident.
 

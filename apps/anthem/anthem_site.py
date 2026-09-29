@@ -46,11 +46,13 @@ SAFETY (this is Protected Health Information):
 """
 from __future__ import annotations
 
-import json as _json
 import logging
 import re
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+from paperpull_core.dates import last_day as _last_day
+from paperpull_core.dates import checked as _checked_date
 
 log = logging.getLogger("anthem_docs.site")
 
@@ -78,7 +80,7 @@ URLS = {
 
 
 # Markers of a genuine sign-in / challenge redirect. "account-login" is Anthem's
-# own sign-in path, so a session that expires and bounces there is recognised.
+# own sign-in path, so a session that expires and bounces there is recognized.
 LOGIN_URL_MARKERS = ["account-login", "/login", "/logon", "/signin", "/sso",
                      "samlsso", "returnurl=", "sessiontimeout", "/logout",
                      "/loggedout"]
@@ -176,7 +178,7 @@ DATE_PATTERNS = [
                 r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
                 r"Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+(\d{4})", re.I), "mdY"),
     (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"), "mdy_slash"),
-    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "iso"),
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?!\d)"), "iso"),
 ]
 _MONTHS = {m: i + 1 for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
@@ -185,17 +187,9 @@ MONTH_YEAR_RE = re.compile(
     r"Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
     r"\s+(\d{4})", re.I)
 YEAR_RE = re.compile(r"\b(19|20)(\d{2})\b")
-_LAST_DAY = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30,
-             7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31}
 
 
-def _last_day(year: int, month: int) -> int:
-    if month == 2 and (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
-        return 29
-    return _LAST_DAY[month]
-
-
-def parse_date(text: str) -> Optional[str]:
+def _parse_date_from_page(text: str) -> Optional[str]:
     if not text:
         return None
     for pattern, kind in DATE_PATTERNS:
@@ -212,6 +206,15 @@ def parse_date(text: str) -> Optional[str]:
         except (KeyError, ValueError):
             continue
     return None
+
+
+def parse_date(text):
+    """The date this provider's page is showing, as YYYY-MM-DD.
+
+    The reading is below, unchanged. This only refuses to believe a result
+    that names a day which does not exist, because a reference number is
+    shaped like a date and used to be taken for one."""
+    return _checked_date(_parse_date_from_page(text), None)
 
 
 def parse_period_date(text: str) -> Tuple[Optional[str], str]:
@@ -291,19 +294,14 @@ def is_safe_control(name: str) -> bool:
 
 
 def is_safe_url(url: str) -> bool:
-    """On Anthem's own hosts, by parsed comparison, never a string prefix."""
-    from urllib.parse import urlparse
-    try:
-        got = urlparse(url or "")
-    except ValueError:
-        return False
-    if got.scheme != "https" or not got.hostname:
-        return False
-    if (got.hostname or "").lower() not in ALLOWED_HOSTS:
-        return False
-    if got.username or got.password:
-        return False
-    return True
+    """True only for an https URL on exactly one of this provider's own
+    hosts, never a subdomain of one.
+
+    The check itself lives in the core, so all of them answer the same way.
+    This app keeps the hosts and its refusal to follow subdomains, which is
+    how it has always behaved."""
+    from paperpull_core.urls import is_safe_url as _host_allows
+    return _host_allows(url, ALLOWED_HOSTS, subdomains=False)
 
 
 def is_anthem_frame(frame) -> bool:
@@ -443,11 +441,6 @@ window.__memberId = window.__memberId || null;
 # category with no EOBs simply returns an empty list and is skipped.
 CLAIM_TYPES = ["Medical", "Pharmacy", "Chiropractic"]
 
-# The two document kinds a single claim can expose. "EOB" is the statement;
-# "EOB Check" is the reimbursement-check document some claims also carry. Told
-# apart by supportingInfo.eobSubType ("HealthCareSummary" vs "Reimbursement").
-DOC_KINDS = ["EOB", "EOB Check"]
-
 # Kept for parity with the sibling apps' diagnose/CSV code, which reads a
 # provider "type map". Here the meaningful axis is the claim type.
 DOCUMENT_TYPES = {t: f"{t} Explanation of Benefits" for t in CLAIM_TYPES}
@@ -455,7 +448,7 @@ DOCUMENT_TYPES = {t: f"{t} Explanation of Benefits" for t in CLAIM_TYPES}
 # How far back to ask for. CONFIRMED live 2026-08-31: the API returns the full
 # history at 24 months but an EMPTY list once `start` is older than ~25-27
 # months (30mo and 36mo both returned zero rows). So 24 months is both the max
-# the server honours and enough to capture everything it keeps.
+# the server honors and enough to capture everything it keeps.
 DEFAULT_LOOKBACK_DAYS = 24 * 30
 
 # Pages whose XHR/fetch we have already hooked (by id()), so add_init_script is
@@ -752,7 +745,7 @@ def parse_doc_id(doc_id: str):
     """"Medical|1234500AA0001|EOB|0" -> ("Medical","1234500AA0001","EOB",0).
 
     Returns None if malformed or if the claim type / doc kind are not ones this
-    app recognises, so a stored or tampered value cannot steer a request at a
+    app recognizes, so a stored or tampered value cannot steer a request at a
     document type the app does not serve. The claim number is validated to the
     alphanumeric shape Anthem uses, which also refuses any path or query
     metacharacter. A trailing sequence number is optional for backward
@@ -975,10 +968,6 @@ IDCARD_URL = f"{BASE}/member/idcard"
 URLS["member_documents"] = DOCUMENTS_URL
 URLS["idcard"] = IDCARD_URL
 
-_MS_API = f"{BASE}/member/secure/api/tcp"
-_FED_DOC_BASE = f"{BASE}/fed/benefits/v1/member/coveragePeriod"
-_POLARIS_IDCARD = "https://membersecure-polaris.anthem.com/api/idcard/trpc"
-
 # A coverage period id, e.g. "79CB-20260701-20261231-MED-721352C26M": a source
 # code, a start and end date (YYYYMMDD), a plan type, and a group id. Validated to
 # this shape so a stored or reshaped value cannot steer a request off the member's
@@ -1021,7 +1010,7 @@ def document_label_for(document_type: str) -> str:
 
 def period_start(coverage_key: str) -> str:
     """The coverage period's start date as YYYY-MM-DD (the document's filing
-    date), or "" if the key is not the shape this app recognises."""
+    date), or "" if the key is not the shape this app recognizes."""
     m = _COVERAGE_KEY_RE.fullmatch((coverage_key or "").strip())
     if not m:
         return ""
@@ -1439,7 +1428,7 @@ def download_member_document(page, coverage_key: str, document_type: str) -> Opt
     coverage period is validated to its known shape so a stored value cannot be
     pointed off the member's own coverage."""
     if not valid_coverage_key(coverage_key):
-        log.error("refusing a document request for an unrecognised coverage period")
+        log.error("refusing a document request for an unrecognized coverage period")
         return None
     if not _prime_bucket(page, DOCUMENTS_URL, "ms", needs_member=True):
         raise SessionExpired("could not capture Anthem's session for a document download")

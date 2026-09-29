@@ -114,8 +114,24 @@ def test_a_verb_stem_inside_another_word_is_not_a_refusal():
         assert not site.is_safe_control(label), label
 
 
+class _NoProps:
+    def get_properties(self):
+        return {}
+
+
+class _Alone:
+    """A fake element that sits inside nothing and holds nothing. The guard
+    asks the page what is around a control and inside it before approving
+    it, and these answer the way a free-standing element would."""
+    def evaluate(self, js, arg=None):
+        return []
+
+    def evaluate_handle(self, js, arg=None):
+        return _NoProps()
+
+
 def test_a_bill_row_hands_over_the_pdf_control_and_never_pay():
-    class El:
+    class El(_Alone):
         def __init__(self, text="", aria=None):
             self.text, self.aria = text, aria
         def inner_text(self, timeout=None):
@@ -129,6 +145,24 @@ def test_a_bill_row_hands_over_the_pdf_control_and_never_pay():
     assert site.pick_document_control([El(""), El("", aria="View Bill PDF")]).aria == "View Bill PDF"
     assert site.pick_document_control([]) is None
     assert site.pick_document_control(None) is None
+
+
+def test_a_control_that_cannot_say_what_is_around_it_is_refused():
+    """A guard that cannot look has not approved anything. A control whose
+    page cannot be asked what sits around it and inside it is refused, and
+    counted as refused for what was around it (second review of round
+    eight)."""
+    class Mute:
+        def inner_text(self, timeout=None):
+            return "View Bill PDF"
+        def get_attribute(self, name):
+            return None
+        def evaluate(self, js, arg=None):
+            raise RuntimeError("Execution context was destroyed")
+
+    tally = {}
+    assert site.pick_document_control([Mute()], tally) is None
+    assert tally == {"seen": 1, "refused": 1, "nearby": 1}
 
 
 def test_the_page_picker_is_the_only_control_outside_a_row():
@@ -152,3 +186,238 @@ def test_the_history_page_is_the_only_place_that_counts_as_found():
     assert not site.on_documents_page(Page("https://evil.test/bill-and-payment-history"))
     assert not site.on_documents_page(Page(
         "https://myaccount.pge.com/myaccount/s/bill-and-payment-history", "Page Not Found"))
+
+
+# -- #33, a page jump that did not take ---------------------------------------
+
+class _Row:
+    def __init__(self, text): self._text = text
+    def inner_text(self, timeout=None): return self._text
+    def query_selector_all(self, sel): return [_Ctl("Pay"), _Ctl("View Bill PDF")]
+
+
+class _Ctl:
+    def __init__(self, text): self._text = text
+    def inner_text(self, timeout=None): return self._text
+    def get_attribute(self, name): return None
+
+
+class _Picker:
+    """The Jump to combobox. `sticky` is the site as the tester saw it: the
+    picker takes the value, the table never follows.
+
+    Shaped like the real handle. click and evaluate take what Playwright's
+    take, and the options are found inside the picker. Its parent does not
+    hear the by-value change event, so these tests walk the option path,
+    the fallback. The by-value path is driven in a real browser in
+    test_page_picker_in_a_browser.py."""
+    def __init__(self, history, pages, sticky):
+        self.history, self.pages, self.sticky, self.value, self.shown = history, pages, sticky, 1, 1
+    def evaluate(self, js, arg=None):
+        return self.pages if "options" in js else self.value
+    def click(self, timeout=None): pass
+    def inner_text(self): return str(self.value)
+    def get_attribute(self, name): return "Jump to" if name == "aria-label" else None
+    def query_selector_all(self, sel):
+        return [_Opt(self, n) for n in self.pages]
+
+
+class _Opt:
+    def __init__(self, picker, n): self.picker, self.n = picker, n
+    def inner_text(self): return str(self.n)
+    def get_attribute(self, name): return None
+    def click(self, timeout=None):
+        self.picker.value = self.n
+        if not self.picker.sticky:
+            self.picker.shown = self.n
+    def evaluate(self, js):
+        self.click()
+
+
+class _History:
+    def __init__(self, pages_of_dates, sticky=False):
+        self.by_page = pages_of_dates
+        self.picker = _Picker(self, list(range(1, len(pages_of_dates) + 1)), sticky)
+    def query_selector(self, sel):
+        return self.picker if "combobox" in sel and "combobox-item" not in sel else None
+    def query_selector_all(self, sel):
+        if "combobox-item" in sel or "option" in sel:
+            return [_Opt(self.picker, n) for n in self.picker.pages]
+        return [_Row("%s View Bill PDF Pay" % d) for d in self.by_page[self.picker.shown - 1]]
+    def wait_for_timeout(self, ms): pass
+
+
+# Invented dates in the shape of his history, four bills a page, newest
+# first, about a month apart.
+PAGES = [["08/14/2032", "07/15/2032", "06/15/2032", "05/14/2032"],
+         ["04/14/2032", "03/15/2032", "02/13/2032", "01/14/2032"],
+         ["12/13/2031", "11/13/2031", "10/14/2031", "09/13/2031"]]
+
+
+def test_a_jump_that_does_not_take_is_reported_not_read_again(monkeypatch):
+    """The tester's history had 7 pages and discovery reported 28 rows and
+    4 bills, the first page read seven times, every bill filed under page
+    7, and nothing found there at download time."""
+    monkeypatch.setattr(site, "get_pagination_pages", lambda page: page.picker.pages)
+    got = site.collect_download_docs(_History(PAGES, sticky=True))
+    assert [d["date_text"] for d in got] == ["2032-08-14", "2032-07-15", "2032-06-15", "2032-05-14"]
+    assert {d["page_number"] for d in got} == {1}, "a bill is filed where it was seen, never where a jump claimed to be"
+
+
+def test_a_jump_that_takes_reads_every_page_once(monkeypatch):
+    monkeypatch.setattr(site, "get_pagination_pages", lambda page: page.picker.pages)
+    got = site.collect_download_docs(_History(PAGES))
+    assert len(got) == 12
+    assert [d["page_number"] for d in got] == [1] * 4 + [2] * 4 + [3] * 4
+    assert got[4] == {"date_text": "2032-04-14", "title": "Energy Statement - 2032-04-14",
+                      "page_number": 2, "row_index": 0, "summary": "Energy Statement"}
+
+
+def test_a_bill_filed_under_the_wrong_page_is_still_found():
+    hist = _History(PAGES)
+    site.goto_page_number(hist, 3)
+    assert hist.picker.shown == 3
+    assert site._row_for_date(hist, "2031-11-13", 9) is not None
+    assert site._row_for_date(hist, "2032-08-14", 0) is None
+    site.goto_page_number(hist, 1)
+    assert site._row_for_date(hist, "2032-08-14", 0) is not None
+
+
+def test_a_jump_that_moves_the_rows_counts_even_if_the_picker_never_says_so(monkeypatch):
+    """Round one of #33 waited for the picker's value to read the target.
+    The tester's picker never did, and the walk stopped at page 1 again."""
+    class _MutePicker(_Picker):
+        def evaluate(self, js, arg=None):
+            return self.pages if "options" in js else 1     # the value never updates
+    hist = _History(PAGES)
+    hist.picker = _MutePicker(hist, [1, 2, 3], sticky=False)
+    monkeypatch.setattr(site, "get_pagination_pages", lambda page: page.picker.pages)
+    got = site.collect_download_docs(hist)
+    assert [d["page_number"] for d in got] == [1] * 4 + [2] * 4 + [3] * 4
+
+
+def test_the_next_control_is_only_ever_next():
+    assert site.is_next_control("Next") and site.is_next_control("Next page") and site.is_next_control(">")
+    assert not site.is_next_control("Next: Pay") and not site.is_next_control("") and not site.is_next_control("Previous")
+
+
+def test_a_row_whose_pdf_control_is_not_an_anchor_still_hands_it_over():
+    class _El(_Alone):
+        def __init__(self, text): self._text = text
+        def inner_text(self, timeout=None): return self._text
+        def get_attribute(self, name): return None
+    class _Handle:
+        """The JS walk's answer, a td and the span inside it, innermost first."""
+        def __init__(self, els): self._els = els
+        def get_properties(self): return {str(i): _H(e) for i, e in enumerate(self._els)}
+    class _H:
+        def __init__(self, e): self._e = e
+        def as_element(self): return self._e
+    class _Row:
+        def query_selector_all(self, sel):
+            if sel.startswith("a, button"): return [_El("Pay")]
+            return []
+        def evaluate_handle(self, js):
+            assert "view" in js and "children" in js and "querySelectorAll" not in js, "the walk uses children, never the patched querySelectorAll"
+            return _Handle([_El("View Bill PDF"), _El("View Bill PDF")])
+        def inner_text(self): return "09/13/2031 View Bill PDF Pay"
+    ctrls = site.row_controls(_Row())
+    assert [c._text for c in ctrls] == ["View Bill PDF", "View Bill PDF", "Pay"], "the walk answers first, the queries after"
+    # and the guard hands over the PDF control, never Pay
+    assert site.pick_document_control(ctrls)._text == "View Bill PDF"
+    assert site.pick_document_control(ctrls)._text == "View Bill PDF"
+    assert "View Bill PDF" in site._describe_row(_Row())
+
+
+# -- round five, the tab moves instead of opening one (#33) -------------------
+
+class _Res:
+    def __init__(self, body, ok=True):
+        self._b, self.ok = body, ok
+
+    def body(self):
+        return self._b
+
+
+class _Request:
+    def __init__(self, bodies):
+        self._bodies = bodies
+        self.asked = []
+
+    def get(self, url, timeout=0):
+        self.asked.append(url)
+        if url not in self._bodies:
+            raise RuntimeError("not found")
+        return _Res(self._bodies[url])
+
+
+class _Frame:
+    def __init__(self, url):
+        self.url = url
+
+
+class _MovedPage:
+    """Where the tester's run was standing when it gave up. One iframe,
+    a viewer, and nothing the app knows about."""
+
+    def __init__(self, url, frames=(), embeds=(), bodies=None):
+        self.url = url
+        self.frames = [_Frame(url)] + [_Frame(f) for f in frames]
+        self._embeds = list(embeds)
+        self.request = _Request(bodies or {})
+
+    def eval_on_selector_all(self, sel, js):
+        return self._embeds
+
+
+PDF = b"%PDF-1.7 a bill"
+
+
+def test_the_pdf_is_taken_from_the_tab_the_control_moved():
+    page = _MovedPage("https://myaccount.pge.com/viewer/bill.pdf",
+                      bodies={"https://myaccount.pge.com/viewer/bill.pdf": PDF})
+    assert site._pdf_from_here(page) == PDF
+
+
+def test_a_viewer_is_not_rendered_but_asked_for_what_is_inside_it():
+    """Rendering a viewer gives one blank sheet, because a viewer is a
+    program and not a document."""
+    inner = "https://myaccount.pge.com/docs/9/bill.pdf"
+    page = _MovedPage("https://myaccount.pge.com/MyAccount/s/billview",
+                      frames=[inner],
+                      bodies={inner: PDF})
+    assert site._pdf_from_here(page) == PDF
+    assert inner in page.request.asked
+
+
+def test_an_embedded_source_counts_too_and_an_html_answer_does_not():
+    inner = "https://myaccount.pge.com/embed/bill.pdf"
+    page = _MovedPage("https://myaccount.pge.com/MyAccount/s/billview",
+                      embeds=[inner],
+                      bodies={"https://myaccount.pge.com/MyAccount/s/billview": b"<html>viewer</html>",
+                              inner: PDF})
+    assert site._pdf_from_here(page) == PDF
+
+
+def test_nothing_off_pge_is_ever_fetched():
+    page = _MovedPage("https://myaccount.pge.com/MyAccount/s/billview",
+                      frames=["https://evil.test/bill.pdf"],
+                      embeds=["http://myaccount.pge.com/insecure.pdf"],
+                      bodies={"https://evil.test/bill.pdf": PDF,
+                              "http://myaccount.pge.com/insecure.pdf": PDF})
+    assert site._pdf_from_here(page) is None
+    assert "https://evil.test/bill.pdf" not in page.request.asked
+
+
+def test_a_page_with_no_pdf_anywhere_says_so_rather_than_saving_something_else():
+    page = _MovedPage("https://myaccount.pge.com/MyAccount/s/billview",
+                      bodies={"https://myaccount.pge.com/MyAccount/s/billview": b"<html>not a bill</html>"})
+    assert site._pdf_from_here(page) is None
+
+
+def test_the_capture_listens_on_the_context_and_puts_the_tab_back():
+    import inspect
+    src = inspect.getsource(site.download_bill)
+    assert "page.context.on(\"response\"" in src, "a popup's answer never reaches this tab's listener"
+    assert "_pdf_from_here(page" in src
+    assert "page.goto(history_url" in src, "the next bill is looked for on the history page"

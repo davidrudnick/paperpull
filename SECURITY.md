@@ -7,13 +7,13 @@ These tools sign in to **real financial and shopping accounts** and download
 
 The `.gitignore` already blocks all of the following. Do not override it.
 
-- **Browser profile folders** (`*-browser-profile/`) — these hold live logged-in
+- **Browser profile folders** (`*-browser-profile/`), these hold live logged-in
   sessions: cookies and auth tokens for your bank, brokerage, and Amazon. This
   is the single worst thing that could leak. Anyone with them can act as you.
-- **`config.json` / `config.<account>.json`** — your real paths and account
+- **`config.json` / `config.<account>.json`**, your real paths and account
   labels. Only the sanitized `config.example.json` is tracked.
-- **Downloaded documents** (`*.pdf`, `*.zip`) — your actual financial records.
-- **Runtime state** — `discovery.json`, `progress.json`, `*.log`, `*.csv`,
+- **Downloaded documents** (`*.pdf`, `*.zip`), your actual financial records.
+- **Runtime state**, `discovery.json`, `progress.json`, `*.log`, `*.csv`,
   `Diagnostics/` (which can contain screenshots of signed-in pages), `Backups/`.
 
 ## Before your first commit
@@ -21,7 +21,7 @@ The `.gitignore` already blocks all of the following. Do not override it.
 1. Confirm nothing sensitive is staged: `git status` should show only source,
    docs, and `config.example.json`.
 2. If you ever accidentally commit a secret, deleting it in a later commit is
-   **not enough** — it stays in git history. Scrub history (e.g. with
+   **not enough**, it stays in git history. Scrub history (e.g. with
    `git filter-repo`) or start a fresh repo.
 
 ## Design safety (what the tools themselves do)
@@ -39,26 +39,31 @@ The `.gitignore` already blocks all of the following. Do not override it.
   elsewhere depends on
   how the provider exposes its documents:
 
-  - **The statement apps** (AAFMAA, Amex, Dominion, Navy Federal, M&T, Paylocity, RedCard,
-    Robinhood, T-Mobile, USAA, Verizon, Wealthfront) click a download control, and gate it
-    with `is_safe_control()`: a hard blocklist (`FORBIDDEN_CONTROL_RE` —
-    buy/sell/transfer/pay/delete/change-setting/…) **plus** a document
-    allowlist (`SAFE_DOC_CONTROL_RE`). A control must pass **both**, so
-    anything unrecognised is refused — deny by default.
-  - **The receipt apps** (Amazon, Target, Walmart) click a print/invoice
-    control matched by a narrow pattern and screened against the same
-    blocklist. There is no separate allowlist in these three, so the guard is
-    blocklist-only.
-  - **Gap** and **UKG** click nothing at all. Gap navigates to the order page
-    and renders it; UKG reads its pay statements and PDFs from the same JSON
-    API its own mobile app uses, over the ordinary session. On a site that can
-    also change direct deposit and tax withholding, not activating a control
-    is the strongest guarantee available - and UKG additionally refuses any
-    URL whose path says `EDIT` rather than `VIEW`.
+  - **The apps that click** (AAFMAA, Ally, Amex, AT&T, Chase, Discover, Dominion, E*TRADE,
+    Fairfax Water, Golden 1, M&T, Navy Federal, Newrez, PG&E, RedCard, Robinhood, SBA, Schwab, SMUD,
+    State Farm, T-Mobile, USAA, U.S. Bank, Verizon, Verizon Mobile, Wealthfront, Wells Fargo, and Target and Walmart for a print
+    control) gate every click with `is_safe_control()`: a hard blocklist
+    (`FORBIDDEN_CONTROL_RE`, buy/sell/transfer/pay/delete/change-setting)
+    **plus** a document allowlist (`SAFE_DOC_CONTROL_RE`). A control must pass
+    **both**, so anything unrecognized is refused, deny by default. Capital
+    One clicks only its own "continue session" dialog.
+  - **Sixteen apps click nothing at all.** Amazon, eBay, Gap, GitHub, Kroger, Meijer and TSP navigate to a
+    page by URL and read it. NetBenefits sends the statement request its own
+    page sends and renders the answer. ADP, Affirm, Anthem, Citi, Fidelity, myPay, Paylocity and UKG read their
+    documents from the same JSON API the provider's own page uses, over the
+    ordinary session. On a site that can also change direct deposit and tax
+    withholding, not activating a control is the strongest guarantee
+    available, and UKG additionally refuses any URL whose path says `EDIT`
+    rather than `VIEW`.
+  - **Every app has a host allowlist.** A stored or page-supplied URL that
+    resolves to any other host is refused before the browser goes there. A
+    repo-wide test (`core/tests/test_every_app_guard.py`) checks that every
+    app has the allowlist and a working guard, and that no broad click is
+    left unguarded.
 - **You sign in, not the tool.** The tools attach to a browser *you* logged into
   (via Chrome DevTools Protocol). They never handle your password or 2FA.
 - **Local only.** The browser's debugging port and the GUI both listen on
-  `127.0.0.1` (localhost) — nothing is exposed to your network. Note that while
+  `127.0.0.1` (localhost), nothing is exposed to your network. Note that while
   the signed-in browser is open, any program running **on your own machine**
   could attach to that debugging port, so close the browser window when you're
   done downloading. The GUI additionally refuses any request whose `Origin`/
@@ -69,4 +74,6 @@ The `.gitignore` already blocks all of the following. Do not override it.
 ## Reporting
 
 This is a personal-use project with no warranty. If you find a security issue,
-open an issue describing it (without including any real credentials or data).
+write to support@paperpull.net so it can be fixed before it is public, or open
+an issue if it is not sensitive. Either way, never include real credentials,
+account numbers or downloaded documents.

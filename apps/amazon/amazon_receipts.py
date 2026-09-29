@@ -19,6 +19,10 @@ Authentication is always manual (--login opens a browser and waits for you).
 """
 from __future__ import annotations
 
+from paperpull_core import failure
+from paperpull_core import renaming
+from paperpull_core.journal import Journal
+from paperpull_core.api_census import Requests
 from paperpull_core.run_reporting import report_run_result
 
 import argparse
@@ -31,13 +35,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from paperpull_core import classification, receipt_pdf
+from paperpull_core import classification, receipt_pdf, scope
 from paperpull_core import browser as browser_launcher
 import amazon_site as site
-from paperpull_core.models import (DONE_STATES, ONLINE, Item, Purchase, State)
+from paperpull_core.models import (ONLINE, Item, Purchase, State)
 from storage import (CsvFile, JsonStore, ORDER_HISTORY_COLUMNS, Paths,
-                     RECEIPT_INDEX_COLUMNS, atomic_write_text, backup_file,
-                     build_pdf_filename, load_config, now_iso, title_case,
+                     RECEIPT_INDEX_COLUMNS, atomic_write_text, build_pdf_filename, load_config, now_iso, title_case,
                      unique_path)
 
 from storage import ensure_owner, PROJECT_DIR, set_filename_owner
@@ -60,6 +63,9 @@ def ask(prompt: str) -> str:
 # ---------------------------------------------------------------------------
 
 class App:
+    _journal = None
+    _requests = None
+
     def __init__(self, args):
         self.args = args
         # --config lets one copy of the code serve several people/accounts:
@@ -70,6 +76,9 @@ class App:
             else (PROJECT_DIR / "config.json")
         self.config = load_config(cfg_path)
         ensure_owner(self.config, cfg_path)
+        # Which Amazon store this install reads. Refused, with the list of
+        # known stores, rather than guessed, since it sets the host allowlist.
+        site.set_marketplace(self.config.get("marketplace"))
         set_filename_owner(self.config.get("owner", "") if self.config.get("owner_in_filename") else "")
         self.paths = Paths(Path(self.config["output_dir"]))
         self.paths.ensure()
@@ -169,7 +178,7 @@ class App:
         """A dedicated work page carrying the print-suppression hook.
 
         In CDP mode a fresh page in the existing (authenticated) context
-        shares the user's session AND receives our init script — existing
+        shares the user's session AND receives our init script, existing
         human-opened tabs are left untouched."""
         ctx = self.browser()
         if self._work_page is not None and not self._work_page.is_closed():
@@ -182,6 +191,7 @@ class App:
             self._work_page.add_init_script(receipt_pdf.PRINT_SUPPRESS_INIT_SCRIPT)
         except Exception:
             pass
+        self.requests
         return self._work_page
 
     def close(self):
@@ -209,18 +219,29 @@ class App:
 
     def check_session(self, page) -> None:
         """Raise/pause on sign-out or security challenges."""
+        # Both of these used to wait at a prompt. Under the panel there is
+        # nobody to answer, and waiting there took the run down with an
+        # end-of-file rather than saying what had happened, so when there
+        # is no console the run stops on its own terms and says what to do
+        # about it. Progress is already saved either way (#48).
         challenge = site.detect_security_challenge(page)
         if challenge:
             self.progress.save(backup=True)
             print(f"\n!! {challenge}")
             print("Processing stopped. Please resolve the challenge yourself in the")
             print("browser window. I will NOT attempt to bypass it.")
-            ask("Press Enter once the page looks normal again (or Ctrl+C to quit)... ")
+            if browser_launcher.ask_or_none(
+                    "Press Enter once the page looks normal again (or Ctrl+C to quit)... ") is None:
+                print("Then press Resume here to carry on from where this stopped.")
+                raise SystemExit(0)
         if site.looks_signed_out(page):
             self.progress.save(backup=True)
             print("\n!! Amazon appears to have signed you out.")
             print("Please sign in manually in the open browser window.")
-            ask("Press Enter after you are signed in again... ")
+            if browser_launcher.ask_or_none(
+                    "Press Enter after you are signed in again... ") is None:
+                print("Then press Resume here to carry on from where this stopped.")
+                raise SystemExit(0)
             site.goto_orders(page)
 
     # -- commands -----------------------------------------------------------
@@ -268,7 +289,13 @@ class App:
         print("This tool never touches your credentials.\n")
         page = self.page()
         page.goto(site.URLS["home"], wait_until="domcontentloaded", timeout=60000)
-        ask("Press Enter here AFTER you have finished signing in... ")
+        # Under the panel there is no console to press Enter at, and this
+        # used to read end-of-file and stop the run before it could check
+        # anything, with a message about .bat files (#48). Nothing is
+        # checked in that case because there is nothing to check yet, and
+        # the browser is deliberately left open.
+        if not browser_launcher.pause_for_sign_in():
+            return
         site.goto_orders(page)
         if site.looks_signed_out(page):
             print("It still looks like you are signed out; the orders page bounced to login.")
@@ -278,15 +305,21 @@ class App:
         self.close()
 
     def _discover_years(self) -> List[int]:
-        """Years to scan, newest first. By default this goes all the way back to
-        Amazon's first year (the year loop stops early once it hits an order-less
-        year). Set default_start_date (or --start-date) to limit how far back."""
-        if self.args.year:
-            return [int(self.args.year)]
-        floor = self.args.start_date or self.config.get("default_start_date")
-        start_year = int(floor[:4]) if floor else 1995  # Amazon launched 1995
+        """Years to scan, newest first. Each year is its own page load, so a
+        scoped run only visits the years inside its window. --year is one
+        year, --start-date (or default_start_date in the config) sets the
+        floor, and --end-date the ceiling. Unscoped, this goes all the way back
+        to Amazon's first year, and the year loop stops early once it hits an
+        order-less year."""
+        first, last = scope.year_window(self.args, self.config)
         this_year = datetime.now().year
-        return list(range(this_year, start_year - 1, -1))
+        newest = min(last, this_year) if last is not None else this_year
+        oldest = first if first is not None else 1995  # Amazon launched 1995
+        years = list(range(newest, oldest - 1, -1))
+        if (first, last) != (None, None):
+            log.info("scoped to %s, %d year(s) to visit",
+                     scope.describe((first, last)), len(years))
+        return years
 
     def cmd_discover(self, types: Optional[List[str]] = None, quiet: bool = False) -> dict:
         """Discovery pass. Amazon paginates by year + startIndex (10/page)."""
@@ -434,6 +467,13 @@ class App:
                 print("  Already completed and PDF verified - skipping.")
                 self.stats["skipped_completed"] += 1
                 continue
+            # Which document the run is on, so a failure file says how far
+            # it got and whether it ever reached a second one.
+            try:
+                self.journal.op("next_item" if i > 1 else "open_item",
+                                "take a document", ordinal=i)
+            except Exception:
+                pass
             try:
                 self.process_one(page, purchase, dry_run=dry_run)
             except KeyboardInterrupt:
@@ -458,6 +498,8 @@ class App:
                     self._record_state(purchase, State.NEEDS_MANUAL_REVIEW,
                                        notes="Details page failed to load twice")
                     self.stats["manual_review"] += 1
+                    self.write_failure("open the document",
+                                       "it would not open twice")
                     return
                 time.sleep(5)
                 site.goto_orders(page)
@@ -490,7 +532,7 @@ class App:
             return
 
         if dry_run:
-            filename = build_pdf_filename(purchase.purchase_date, purchase.summary)
+            filename = build_pdf_filename(purchase.purchase_date, purchase.summary, record=purchase)
             print(f"  DRY RUN - would save: {filename}")
             return
 
@@ -500,7 +542,6 @@ class App:
             return  # state already recorded inside
 
         # ---- CSVs + progress ----
-        status = State.NEEDS_MANUAL_REVIEW.value if review_needed else State.COMPLETED.value
         receipt_status = "Downloaded"
         self._write_csv_rows(purchase, receipt_status=receipt_status,
                              processing_status="Review Needed" if review_needed else "Completed",
@@ -510,6 +551,7 @@ class App:
                            notes=("Low classification confidence" if review_needed else ""))
         if review_needed:
             self.stats["manual_review"] += 1
+        self.journal.checkpoint('a document is saved')
         self.stats["receipts_downloaded"] += 1
         print(f"  Saved: {purchase.pdf_filename}")
 
@@ -535,6 +577,14 @@ class App:
                 self.stats["manual_review"] += 1
                 return False
 
+        # Prefer the invoice PDF(s) behind the order's Invoice / Rechnung menu:
+        # on stores such as amazon.de that is the legal invoice, where the
+        # printable summary is not. Orders without one fall through to the
+        # summary below.
+        invoices = site.find_invoice_pdf_links(page, purchase.order_number)
+        if invoices:
+            return self._save_invoices(page, purchase, invoices)
+
         # Make sure we are on the printable summary (not a details page).
         if "summary/print.html" not in (page.url or ""):
             page.goto(site.print_invoice_url(purchase.order_number),
@@ -557,8 +607,9 @@ class App:
         purchase.document_type = "Receipt"
         folder = self.paths.online
         filename = build_pdf_filename(purchase.purchase_date, purchase.summary,
-                                      purchase.document_type)
-        out_path = unique_path(folder, filename, self.config["max_path_length"])
+                                      purchase.document_type, record=purchase)
+        out_path = unique_path(folder, filename, self.config["max_path_length"],
+                               distinguisher=purchase.order_number)
         if out_path.name != filename:
             self.stats["duplicate_filenames"] += 1
 
@@ -574,6 +625,63 @@ class App:
                                notes=f"PDF generation failed: {e}")
             self.stats["failed"] += 1
             return False
+
+    def _save_invoices(self, page, purchase: Purchase, invoices: list) -> bool:
+        """Download the order's invoice PDF(s) as Amazon issued them. The
+        first is the order's document of record and goes through the full
+        validation; an order split across sellers has more than one, and the
+        others are saved beside it as "(2 of 3)" and so on."""
+        purchase.document_type = "Invoice"
+        folder = self.paths.online
+        n = len(invoices)
+
+        def target(i: int) -> Path:
+            filename = build_pdf_filename(purchase.purchase_date, purchase.summary,
+                                          purchase.document_type, part=(i, n), record=purchase)
+            path = unique_path(folder, filename, self.config["max_path_length"],
+                               distinguisher=purchase.order_number)
+            if path.name != filename:
+                self.stats["duplicate_filenames"] += 1
+            return path
+
+        self._record_state(purchase, State.RECEIPT_LOCATED)
+        purchase.receipt_url = site.invoice_popover_url(purchase.order_number)
+
+        out_path = target(1)
+        _, first_url = invoices[0]
+        if not site.download_invoice_pdf(page, first_url, out_path):
+            self._record_state(purchase, State.FAILED,
+                               notes="Invoice PDF download failed")
+            self.stats["failed"] += 1
+            print("  Invoice PDF download failed.")
+            return False
+        if not self._finish_pdf(page, purchase, out_path, reprint=False):
+            return False
+
+        extra_names = []
+        tokens = receipt_pdf.expected_tokens_for(purchase)
+        for i, (label, url) in enumerate(invoices[1:], start=2):
+            extra = target(i)
+            if not site.download_invoice_pdf(page, url, extra):
+                log.warning("Additional invoice (%s) download failed for %s",
+                            label, purchase.key)
+                continue
+            result = receipt_pdf.validate_pdf(extra, self.config["min_pdf_bytes"], tokens)
+            if not result.ok:
+                quarantine = unique_path(self.paths.manual_review, extra.name,
+                                         self.config["max_path_length"])
+                extra.replace(quarantine)
+                print(f"  !! Additional invoice failed validation ({result.reason}); "
+                      f"moved to Manual Review.")
+                continue
+            extra_names.append(extra.name)
+            self.stats["new_files"].append(str(extra))
+        if extra_names:
+            purchase.receipt_count = 1 + len(extra_names)
+            self._record_state(purchase, State.PDF_VERIFIED,
+                               notes="Also saved: " + ", ".join(extra_names),
+                               extra={"receipt_count": purchase.receipt_count})
+        return True
 
     def _capture_document(self, target_page, purchase: Purchase,
                           out_path: Path, content_kind: str = "") -> None:
@@ -613,16 +721,19 @@ class App:
         receipt_pdf.print_page_to_pdf(target_page, out_path)
 
     def _finish_pdf(self, page, purchase: Purchase, out_path: Path,
-                    popup=None, source_page=None) -> bool:
+                    popup=None, source_page=None, reprint: bool = True) -> bool:
         purchase.pdf_path = str(out_path)
         purchase.pdf_filename = out_path.name
         self._record_state(purchase, State.PDF_SAVED)
 
         tokens = receipt_pdf.expected_tokens_for(purchase)
         result = receipt_pdf.validate_pdf(out_path, self.config["min_pdf_bytes"], tokens)
+        # A downloaded invoice is not re-printed: printing the page on screen
+        # would replace Amazon's PDF with a different document.
         if not result.ok:
-            log.warning("Validation failed (%s); retrying once", result.reason)
             self.stats["validation_failures"] += 1
+        if not result.ok and reprint:
+            log.warning("Validation failed (%s); retrying once", result.reason)
             try:
                 retry_page = source_page or page
                 receipt_pdf.print_page_to_pdf(retry_page, out_path)
@@ -801,6 +912,17 @@ class App:
         print(f"Resuming: {len(pend)} incomplete purchase(s).")
         self.process_purchases(pend, dry_run=self.args.dry_run)
 
+
+    def cmd_rename(self):
+        """Rename what is already downloaded, without downloading it again.
+
+        A naming scheme improves and the files on disk keep the old one.
+        Nothing about them needs fetching, only their names are wrong, so
+        nothing is asked of the provider here (#43, #49). A preview
+        unless --apply is given."""
+        self.stats["mode"] = "rename"
+        renaming.run_for(self, apply_changes=bool(getattr(self.args, "apply", False)))
+
     def cmd_verify(self):
         self.stats["mode"] = "verify"
         rows = self.index_csv.read_all()
@@ -830,10 +952,103 @@ class App:
             for k, c in dups.items():
                 print(f"  {k}: {c} rows")
 
+    def cmd_reparse_items(self):
+        """Re-read the item lines from receipts already on disk, offline.
+
+        The parser learned the Whole Foods layout after many receipts had been
+        saved with item names but no prices. This walks the receipt index,
+        pulls the text out of each PDF, and where the saved record has items
+        without prices and the fresh parse has them, updates the record and
+        the order history. A parse is only trusted when its line totals add up
+        to the item subtotal printed on the receipt, so a layout the parser
+        does not really understand cannot overwrite what is there. No browser,
+        no network, nothing downloaded."""
+        self.stats["mode"] = "reparse-items"
+        rows = self.index_csv.read_all()
+        if not rows:
+            print("Receipt index is empty - nothing to reparse.")
+            return
+        history = self.order_csv.read_all()
+        updated = skipped = unchanged = missing = 0
+        for row in rows:
+            key = f"{row.get('Purchase Type')}:{row.get('Order or Receipt Number')}"
+            if self.args.order_number and row.get("Order or Receipt Number") != self.args.order_number:
+                continue
+            path = Path(row.get("PDF Full Path") or "")
+            if not path.is_file():
+                missing += 1
+                continue
+            rec = self.progress.data.get(key)
+            if not rec:
+                continue
+            purchase = Purchase.from_dict(rec)
+            if purchase.items and all(i.unit_price for i in purchase.items):
+                unchanged += 1
+                continue
+            text = receipt_pdf.pdf_text(path)
+            items = site._parse_items_from_summary_text(text)
+            priced = [i for i in items if i.unit_price]
+            if not priced:
+                skipped += 1
+                continue
+            subtotal = site.parse_subtotal(text)
+            total = round(sum(site.money_value(i.line_total) for i in priced), 2)
+            note = ""
+            if subtotal is not None and abs(total - subtotal) > 0.01:
+                # Amazon's printable summary sometimes leaves a line or two
+                # out (a bag fee, or a page that stopped short). A parse that
+                # accounts for nearly all of the subtotal is kept and says so
+                # in Notes. One that overshoots, or falls well short, is not
+                # a parse of this receipt and is refused.
+                short = subtotal - total
+                if short < 0 or short > 0.05 * subtotal:
+                    print(f"  SKIP {row.get('PDF Filename','')}: items add to ${total:,.2f}, "
+                          f"receipt says ${subtotal:,.2f}")
+                    skipped += 1
+                    continue
+                note = f"items add to ${total:,.2f}, receipt subtotal ${subtotal:,.2f}"
+            purchase.items = priced
+            if note:
+                purchase.notes = "; ".join(x for x in (purchase.notes, note) if x)
+                rec["notes"] = purchase.notes
+            rec["items"] = [i.to_dict() for i in priced]
+            self.progress.update(key, rec)
+            history = self._replace_history_rows(history, purchase)
+            updated += 1
+            print(f"  {row.get('PDF Filename','')}: {len(priced)} item(s) priced")
+        if updated:
+            self.order_csv.rewrite(history)
+        print(f"\nReparsed: {updated} updated, {unchanged} already priced, "
+              f"{skipped} skipped, {missing} PDF(s) not on disk.")
+
+    def _replace_history_rows(self, history: List[dict], purchase: Purchase) -> List[dict]:
+        """The order history has one row per item. Swap this order's rows for
+        fresh ones, keeping every column the old rows carried that an item
+        does not decide (status, summary, filename, URLs, notes)."""
+        old = [r for r in history if r.get("Order or Receipt Number") == purchase.order_number
+               and r.get("Purchase Type") == purchase.purchase_type]
+        if not old:
+            return history
+        base = dict(old[0])
+        fresh = []
+        for it in purchase.items:
+            r = dict(base)
+            r.update({"Item Name": it.name, "Quantity": it.quantity,
+                      "Unit Price": it.unit_price, "Line Item Total": it.line_total,
+                      "Notes": purchase.notes})
+            fresh.append(r)
+        keep = [r for r in history if r not in old]
+        at = history.index(old[0])
+        return keep[:at] + fresh + keep[at:]
+
     def cmd_review_names(self):
         rows = self.index_csv.read_all()
-        review = [r for r in rows if r.get("Classification Confidence") == "Low"
-                  or "Review" in (r.get("Processing Status") or "")]
+        # A row somebody already renamed is left out, even one renamed
+        # before its confidence was marked High as well (#47).
+        review = [r for r in rows
+                  if (r.get("Classification Confidence") == "Low"
+                      or "Review" in (r.get("Processing Status") or ""))
+                  and "renamed via --review-names" not in (r.get("Notes") or "")]
         if not review:
             print("No receipts need name review.")
             return
@@ -860,7 +1075,7 @@ class App:
             old_path = Path(r.get("PDF Full Path") or "")
             date = r.get("Purchase Date") or (old_path.name[:10] if old_path.name else "")
             doc_type = r.get("Document Type") or "Receipt"
-            new_name = build_pdf_filename(date, new_summary, doc_type)
+            new_name = build_pdf_filename(date, new_summary, doc_type, record=prog)
             if old_path.exists():
                 new_path = unique_path(old_path.parent, new_name,
                                        self.config["max_path_length"])
@@ -873,6 +1088,7 @@ class App:
             r["PDF Full Path"] = str(new_path)
             r["Purchase Summary"] = new_summary
             r["Processing Status"] = "Completed"
+            r["Classification Confidence"] = "High"
             r["Notes"] = (r.get("Notes", "") + "; renamed via --review-names").strip("; ")
             for orow in order_rows:
                 if (orow.get("Order or Receipt Number") == r.get("Order or Receipt Number")
@@ -890,6 +1106,101 @@ class App:
             self.index_csv.rewrite(rows)
             self.order_csv.rewrite(order_rows)
             print("CSV files and progress.json updated.")
+
+    @property
+    def requests(self):
+        """Which of the provider's own calls happened, and what came back.
+
+        Made on first use like the journal, and started at once, because
+        it only sees what arrives after it starts listening. An app that
+        drives an API rather than a page has no selectors for the census
+        to count, and this is what it has instead."""
+        if self._requests is None:
+            self._requests = Requests(getattr(self, "_work_page", None),
+                                      getattr(site, "is_safe_url", None))
+            self._requests.start()
+        return self._requests
+
+    @property
+    def journal(self):
+        """The run's journal, made the first time anything writes to it.
+
+        Lazy, because a run that never opens a page has nothing to say
+        and an app that fails before the browser is up must not fail
+        differently because of this. It watches every selector the app
+        declares, since choosing between them is a decision nobody can
+        make before the first failure."""
+        if self._journal is None:
+            self._journal = Journal(getattr(self, "_work_page", None),
+                                    getattr(site, "FALLBACK", None))
+        return self._journal
+
+    def write_failure(self, step: str, reason: str, text: str = "",
+                      postmortem: dict = None) -> None:
+        """What the page looked like when this went wrong, to a file.
+
+        Written without anybody having to know to ask for it, because a
+        tester who has to be told to run a second command is a tester who
+        sends one file and waits a day for the request for the other.
+
+        One per run. A run where thirty documents fail for one reason
+        does not need thirty files, and the first is taken while the page
+        is still sitting on the thing that broke."""
+        if self.stats.get("failure_files"):
+            return
+        extra = {"postmortem": postmortem} if postmortem else None
+        # A checkpoint at the moment it gave up. It is also what makes the
+        # journal when nothing had written to it yet, and every tester file
+        # sent in on 2026-09-25 came back without one for that reason.
+        try:
+            if getattr(self, "_work_page", None) is not None:
+                self.journal.checkpoint("when the run gave up")
+        except Exception:
+            pass
+        path = failure.write_failure(
+            self.paths.diagnostics,
+            command=self.stats.get("mode") or "run",
+            step=step, reason=reason,
+            page=getattr(self, "_work_page", None),
+            selectors=getattr(site, "FALLBACK", None),
+            journal=self._journal,
+            requests=self._requests,
+            provider='Amazon', text=text, extra=extra)
+        if not path:
+            return
+        self.stats["failure_files"] = 1
+        try:
+            import json as _failure_json
+            said = failure.summarize(_failure_json.loads(
+                Path(path).read_text(encoding="utf-8")))
+        except Exception:
+            said = []
+        if said:
+            print("  What it noticed:")
+            for line in said[:6]:
+                print("    - %s" % line)
+        print("  Read it through, then attach it to this provider's issue on")
+        print("  GitHub. It is the one thing that saves a round of guessing.")
+
+    def write_survey(self) -> None:
+        """The survey Diagnose is safe to send.
+
+        Diagnose writes a detailed file for repairing this provider, and
+        that file holds the page's own title, the URL with its query
+        string, the text of the rows it found and the labels of the
+        controls. The panel said to attach it to an issue, which is not
+        something that file is for.
+
+        So this is written beside it, on the same list of what may leave
+        that the failure file uses, and it is the one to send.
+        """
+        failure.write_survey(
+            self.paths.diagnostics,
+            page=getattr(self, "_work_page", None),
+            selectors=getattr(site, "FALLBACK", None),
+            journal=self._journal,
+            requests=self._requests,
+            provider='Amazon')
 
     def cmd_diagnose(self):
         """Inspect one purchase per type and record local diagnostics."""
@@ -941,10 +1252,23 @@ class App:
             out = self.paths.diagnostics / f"diagnose-{ptype}-{p.order_number}.json"
             atomic_write_text(out, _json.dumps(info, indent=2))
             print(f"  Wrote {out}")
+            print("  That is the detailed file, for repairing this provider. It")
+            print("  carries the page's own words, so it stays on this machine")
+            print("  unless you decide to send it.")
             print(f"  Print-receipt controls found: {info.get('print_receipt_controls', '?')}; "
                   f"receipt section: {info.get('receipt_section_found', '?')}")
 
     # -- run summary --------------------------------------------------------
+
+    def cmd_record(self):
+        """Record the path a person takes to a receipt, so this app can be
+        written or repaired to take the same one. Downloads nothing, and
+        captures no keystroke. The whole thing is in the core."""
+        self.stats["mode"] = "record"
+        from paperpull_core.recorder import record_session
+        record_session(self.page(), site, self.paths.diagnostics,
+                       provider='Amazon',
+                       owner=self.config.get("owner", ""))
 
     def write_run_summary(self):
         s = self.stats
@@ -998,11 +1322,16 @@ def build_parser() -> argparse.ArgumentParser:
         ("all", "process every order (asks for confirmation)"),
         ("resume", "resume incomplete purchases"),
         ("verify", "re-validate every indexed PDF"),
+        ("rename", "rename downloaded files to this app's current naming"),
         ("review-names", "interactively fix low-confidence names"),
+        ("reparse-items", "re-read item prices from saved receipt PDFs, offline"),
         ("diagnose", "inspect one order, write diagnostics"),
+        ("record", "record your own path to a receipt, so this app can be repaired"),
     ]
     for name, help_text in modes:
         ap.add_argument(f"--{name}", action="store_true", help=help_text)
+    ap.add_argument("--apply", action="store_true",
+                    help="with --rename, actually rename (default is a preview)")
     ap.add_argument("--dry-run", action="store_true",
                     help="extract and plan filenames but save no PDFs/CSVs")
     ap.add_argument("--year", type=int)
@@ -1044,10 +1373,17 @@ def main(argv=None):
             app.cmd_resume()
         elif args.verify:
             app.cmd_verify()
+        elif args.rename:
+            app.cmd_rename()
         elif getattr(args, "review_names"):
             app.cmd_review_names()
+        elif getattr(args, "reparse_items"):
+            app.cmd_reparse_items()
+        elif args.record:
+            app.cmd_record()
         elif args.diagnose:
             app.cmd_diagnose()
+            app.write_survey()
         elif args.dry_run:
             app.cmd_run([ONLINE], "dry-run")
         else:
@@ -1059,7 +1395,11 @@ def main(argv=None):
     finally:
         app.progress.save()
         app.discovery.save()
-        if app.stats["mode"]:
+        # A run that only looked at the page writes no summary. The
+        # summary rewrites new-this-run.txt, and for a mode that
+        # downloads nothing that means replacing the real list from
+        # the last download run with an empty one.
+        if app.stats["mode"] not in ("", "diagnose", "record"):
             app.write_run_summary()
         app.close()
     return 0

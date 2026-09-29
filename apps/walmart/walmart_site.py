@@ -5,14 +5,14 @@ in the project should contain a Walmart selector.
 
 INITIAL SELECTORS: written 2026-07-23 from Walmart's known URL scheme; run
 `python walmart_receipts.py --diagnose` and `probe_orders.py` after signing
-in, then repair the FALLBACK selectors below against Diagnostics/ output —
+in, then repair the FALLBACK selectors below against Diagnostics/ output,
 the same repair workflow used for the Target project.
 
 Walmart's purchase history at walmart.com/orders mixes Online orders and
 In-store purchases in one list; cards are classified by their text/URL
 rather than by page tabs. Walmart also uses aggressive bot detection
 ("Press & Hold" / "Robot or human?" challenges). This module only detects
-those and reports them — the tool stops and asks the user to take over;
+those and reports them, the tool stops and asks the user to take over;
 it NEVER attempts a bypass.
 
 Navigation strategy priority:
@@ -29,9 +29,12 @@ import html as _html
 import logging
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from paperpull_core.models import IN_STORE, ONLINE, Item, Purchase
+from paperpull_core.urls import is_safe_url as _host_allows
+from paperpull_core.controls import click_next_page as _click_next_page
+from paperpull_core.dates import checked as _checked_date
 from storage import now_iso
 
 log = logging.getLogger("walmart_receipts.site")
@@ -62,14 +65,6 @@ STORE_MARKER_RE = re.compile(
 # ---------------------------------------------------------------------------
 # Accessible names / labels
 # ---------------------------------------------------------------------------
-
-TAB_NAME = {
-    ONLINE: re.compile(r"^\s*online\s*$", re.I),
-    IN_STORE: re.compile(r"^\s*in[\s\-]?store\s*$", re.I),
-}
-
-LOAD_MORE_RE = re.compile(
-    r"(load more|show more|view more|more orders|more purchases|next page)", re.I)
 # A section EXPANDER only (rare). The actual print trigger "View receipt
 # details" is handled by PRINT_RECEIPT_RE, so open_receipt_section never
 # clicks it prematurely (that would fire window.print before we are ready).
@@ -136,11 +131,6 @@ FALLBACK = {
     "store_receipt_container": "[data-testid*='receipt'], [data-automation-id*='receipt']",
 }
 
-CARD_CONTAINER = {
-    ONLINE: FALLBACK["order_card"],
-    IN_STORE: FALLBACK["order_card"],
-}
-
 # Card is a purchase card, not the status-tracker element that also matches.
 def _is_order_card_testid(testid: str) -> bool:
     return bool(re.fullmatch(r"order-\d+", testid or ""))
@@ -150,7 +140,7 @@ DATE_PATTERNS = [
                 r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
                 r"Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+(\d{4})", re.I), "mdY"),
     (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"), "mdy_slash"),
-    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "iso"),
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?!\d)"), "iso"),
 ]
 
 _MONTHS = {m: i + 1 for i, m in enumerate(
@@ -166,7 +156,7 @@ STORE_TRIP_RE = re.compile(
     r"(?:store\s+purchase|purchased)\s+at\s+([^\n]+)|store\s+trip\s+at\s+([^\n]+)", re.I)
 
 
-def parse_date(text: str) -> Optional[str]:
+def _parse_date_from_page(text: str) -> Optional[str]:
     if not text:
         return None
     for pattern, kind in DATE_PATTERNS:
@@ -184,6 +174,15 @@ def parse_date(text: str) -> Optional[str]:
         except (KeyError, ValueError):
             continue
     return None
+
+
+def parse_date(text):
+    """The date this provider's page is showing, as YYYY-MM-DD.
+
+    The reading is below, unchanged. This only refuses to believe a result
+    that names a day which does not exist, because a reference number is
+    shaped like a date and used to be taken for one."""
+    return _checked_date(_parse_date_from_page(text), None)
 
 
 def parse_money(text: str) -> str:
@@ -280,55 +279,19 @@ def select_history_tab(page, purchase_type: str) -> bool:
     return True
 
 
-YEAR_OPTION_RE = re.compile(
-    r"(20\d{2}|(past|last)\s+\d+\s+(months?|years?)|all(\s+time)?)", re.I)
-
-
-def get_year_options(page) -> List[str]:
-    """Walmart's order list has a time-range <select> filter (e.g. 'Last 3
-    months', '2025'). Only trust real selects whose options look like
-    years/ranges — never header buttons."""
-    try:
-        for select in page.locator("select").all():
-            options = [o.strip() for o in select.locator("option").all_inner_texts()]
-            candidate = [o for o in options if YEAR_OPTION_RE.fullmatch(o)]
-            if candidate and len(candidate) >= max(1, len([o for o in options if o]) - 1):
-                return candidate
-    except Exception:
-        pass
-    return []
-
-
-def select_year_option(page, option_text: str) -> bool:
-    try:
-        for select in page.locator("select").all():
-            options = select.locator("option").all_inner_texts()
-            if any(option_text.strip() == o.strip() for o in options):
-                select.select_option(label=option_text.strip())
-                page.wait_for_timeout(3000)
-                return True
-    except Exception:
-        pass
-    return False
-
-
 def _go_next_page(page) -> bool:
     """Advance to the next page of the paginated order list. Returns False
-    when there is no next page."""
-    for getter in (
-        lambda: page.get_by_role("link", name=re.compile(r"^\s*next\s*$", re.I)),
-        lambda: page.get_by_role("button", name=re.compile(r"^\s*next\s*$", re.I)),
-        lambda: page.locator("[aria-label*='Next' i]"),
-    ):
-        try:
-            loc = getter()
-            if loc.count() > 0 and loc.first.is_visible() and loc.first.is_enabled():
-                loc.first.scroll_into_view_if_needed()
-                loc.first.click()
-                page.wait_for_timeout(2500)
-                return True
-        except Exception:
-            continue
+    when there is no next page.
+
+    The last of the three ways this looked used to be any element whose
+    aria-label merely contains "Next", clicked without reading it, which
+    on an orders page is as likely to be "Next day delivery" as the
+    pagination. The allowlist in the core decides now, the same one the
+    nine document apps page forward through.
+    """
+    for selector in ("[aria-label*='Next' i]", "a, button"):
+        if _click_next_page(page, selector):
+            return True
     return False
 
 
@@ -452,6 +415,14 @@ def card_to_purchase(card: RawCard, purchase_type: str,
 # ---------------------------------------------------------------------------
 
 def goto_details(page, purchase: Purchase) -> None:
+    # Built from the order number against a fixed base, so it is safe when it
+    # is made. It does not stay that way: `details_url = page.url` overwrites
+    # it with wherever the browser actually landed, and that is what a later
+    # run opens. Raising is handled, the caller retries once and then files
+    # the purchase for manual review.
+    if not is_safe_url(purchase.details_url):
+        raise ValueError("refusing to open an order page that is not on Walmart: %s"
+                         % (purchase.details_url or "")[:80])
     page.goto(purchase.details_url, wait_until="domcontentloaded", timeout=60000)
     page.wait_for_timeout(3000)
 
@@ -804,87 +775,6 @@ def find_receipt_iframe(page):
     return None
 
 
-def trigger_print_receipt(page, control, timeout_ms: int = 15000) -> Tuple[str, object]:
-    old_url = page.url
-    download_info = {}
-    popup_info = {}
-
-    def on_download(d):
-        download_info["download"] = d
-
-    def on_popup(p):
-        popup_info["page"] = p
-
-    page.on("download", on_download)
-    page.context.on("page", on_popup)
-    try:
-        try:
-            page.evaluate("() => { window.__targetReceiptsPrintHTML = null; "
-                          "window.__targetReceiptsPrintCalled = false; }")
-        except Exception:
-            pass
-        control.scroll_into_view_if_needed()
-        control.click()
-        page.wait_for_timeout(1500)
-        deadline_rounds = max(1, timeout_ms // 500)
-        for _ in range(deadline_rounds):
-            if download_info.get("download"):
-                return "download", download_info["download"]
-            if popup_info.get("page"):
-                popup = popup_info["page"]
-                try:
-                    popup.wait_for_load_state("domcontentloaded", timeout=15000)
-                except Exception:
-                    pass
-                return "popup", popup
-            try:
-                if page.evaluate("() => window.__targetReceiptsPrintCalled === true"):
-                    return "print_called", page
-            except Exception:
-                pass
-            if page.url != old_url:
-                return "navigated", page
-            page.wait_for_timeout(500)
-        return "inline", page
-    finally:
-        try:
-            page.remove_listener("download", on_download)
-        except Exception:
-            pass
-        try:
-            page.context.remove_listener("page", on_popup)
-        except Exception:
-            pass
-
-
-def wait_for_receipt_content(page, timeout_ms: int = 15000) -> str:
-    deadline_rounds = max(1, timeout_ms // 500)
-    for _ in range(deadline_rounds):
-        try:
-            if page.locator(FALLBACK["store_receipt_container"]).count() > 0:
-                return "store-receipt"
-        except Exception:
-            pass
-        try:
-            if find_print_receipt_controls(page):
-                return "print-controls"
-        except Exception:
-            pass
-        page.wait_for_timeout(500)
-    return ""
-
-
-def count_store_receipts(page) -> int:
-    try:
-        body = page.locator("body").inner_text(timeout=5000)
-        m = re.search(r"store receipt\s*\d+\s*of\s*(\d+)", body, re.I)
-        if m:
-            return max(1, int(m.group(1)))
-    except Exception:
-        pass
-    return 1
-
-
 # ---------------------------------------------------------------------------
 # Host allowlist. Added repo-wide after a review found this app would fetch or
 # navigate to whatever URL a stored record or a page attribute contained, using
@@ -895,15 +785,8 @@ ALLOWED_HOSTS = {'walmart.com'}
 
 
 def is_safe_url(url: str) -> bool:
-    """True only for an https URL on one of this provider's own hosts."""
-    from urllib.parse import urlparse
-    try:
-        got = urlparse(url or "")
-    except ValueError:
-        return False
-    if got.scheme != "https" or not got.hostname:
-        return False
-    if got.username or got.password:
-        return False
-    host = got.hostname.lower().rstrip(".")
-    return any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS)
+    """True only for an https URL on one of this provider's own hosts.
+
+    The check itself lives in the core, so all of them answer the same way.
+    This app keeps the hosts, which is the part that really is its own."""
+    return _host_allows(url, ALLOWED_HOSTS)

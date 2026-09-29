@@ -20,6 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
+from .spec import RECEIPT
+
 # ---------------------------------------------------------------------------
 # Paths / configuration
 # ---------------------------------------------------------------------------
@@ -91,10 +93,54 @@ def load_config(path: Optional[Path] = None) -> dict:
     cfg.setdefault("browser", "auto")
     for key, value in sp.config_defaults.items():
         cfg.setdefault(key, value)
+    # How files are named (#50). Read here because every app loads its
+    # config before it names anything, so no app has to remember to.
+    set_filename_patterns(cfg)
     return cfg
 
 
 _FILENAME_OWNER = ""
+
+# The file naming pattern this run uses, or "" for the default of its kind.
+_FILENAME_PATTERN = ""
+_PATTERN_WARNED = set()
+# The account holder's name for a pattern that asks for {owner}. Under the
+# default the name appears only when owner_in_filename is on, as before,
+# and somebody who writes {owner} into a pattern of their own wants it.
+_PATTERN_OWNER = ""
+
+
+def set_filename_patterns(config: dict) -> str:
+    """Choose the pattern this app names files with, from its config.
+
+    An app's own filename_pattern wins, then the one for its kind,
+    filename_pattern_receipts or filename_pattern_statements, then the
+    default, which is exactly how names were built before patterns
+    existed. A pattern that cannot be used is reported once and the
+    default is used instead, because a typo in a setting must never be
+    the reason a download run stops. Returns the pattern chosen."""
+    from . import naming
+    global _FILENAME_PATTERN, _PATTERN_OWNER
+    _PATTERN_OWNER = str((config or {}).get("owner") or "").strip()
+    receipts = spec().kind == RECEIPT if _SPEC is not None else False
+    chosen = ""
+    for key in ("filename_pattern",
+                "filename_pattern_receipts" if receipts
+                else "filename_pattern_statements"):
+        value = (config or {}).get(key)
+        if isinstance(value, str) and value.strip():
+            chosen = value.strip()
+            break
+    if chosen:
+        problem = naming.check(chosen)
+        if problem:
+            if chosen not in _PATTERN_WARNED:
+                _PATTERN_WARNED.add(chosen)
+                print("The file naming pattern in config.json cannot be used, "
+                      "so files keep their usual names. %s" % problem)
+            chosen = ""
+    _FILENAME_PATTERN = chosen
+    return chosen
 
 
 def set_filename_owner(name: str) -> None:
@@ -236,15 +282,40 @@ def sanitize_component(name: str, max_len: int = 120) -> str:
 
 def build_pdf_filename(purchase_date: str, summary: str,
                        document_type: str = "Receipt",
-                       part: Optional[tuple] = None, owner=None) -> str:
-    """YYYY-MM-DD [Owner ]<Provider> <Summary> <Receipt|Invoice>[ (i of n)].pdf"""
+                       part: Optional[tuple] = None, owner=None,
+                       record=None, pattern: Optional[str] = None) -> str:
+    """A document's file name, from the naming pattern (#50).
+
+    With no pattern set, the default for the app's kind, which is exactly
+    YYYY-MM-DD [Owner ]<Provider> <Summary> <Receipt|Invoice>[ (i of n)].pdf
+    as it always was. `record` is the app's own record, which is where a
+    pattern finds fields beyond the date, the summary and the kind, such as
+    an order number or an account. `pattern` is for a preview, and a run
+    leaves it out and uses the one its config chose."""
+    from . import naming
     date = (purchase_date or "0000-00-00").strip()
     summary = title_case(summary or "Purchase")
     who_name = _FILENAME_OWNER if owner is None else owner
-    who = f"{who_name.strip()} " if who_name and who_name.strip() else ""
-    base = f"{date} {who}{spec().provider} {summary} {document_type}"
-    if part and part[1] > 1:
-        base += f" ({part[0]} of {part[1]})"
+    receipts = spec().kind == RECEIPT
+    chosen = pattern or _FILENAME_PATTERN or (
+        naming.DEFAULT_RECEIPTS if receipts else naming.DEFAULT_STATEMENTS)
+    fields = naming.fields_of(record, date=date, summary=summary,
+                              kind=document_type, provider=spec().provider,
+                              owner=(who_name or "").strip(), part=part,
+                              receipts=receipts)
+    if (chosen not in (naming.DEFAULT_RECEIPTS, naming.DEFAULT_STATEMENTS)
+            and owner is None and not fields["owner"]):
+        fields["owner"] = _PATTERN_OWNER
+    if chosen in (naming.DEFAULT_RECEIPTS, naming.DEFAULT_STATEMENTS):
+        # The default says exactly what the call said, and nothing the
+        # record adds. A statements app passes no kind, and filling it
+        # from the record's category would rename every statement.
+        fields["kind"] = document_type or ""
+    try:
+        base = naming.render(chosen, fields)
+    except naming.PatternError:
+        base = naming.render(naming.DEFAULT_RECEIPTS if receipts
+                             else naming.DEFAULT_STATEMENTS, fields)
     return sanitize_component(base) + ".pdf"
 
 
@@ -263,22 +334,42 @@ def title_case(text: str) -> str:
         elif "'" in w:
             # Children's -> Children's (capitalize first letter only)
             out.append(w[0].upper() + w[1:])
+        elif len(w) > 1 and w[0].islower() and w[1].isupper():
+            # A name spelled with a small first letter and a capital second,
+            # iCloud, iPhone, iPad, eBay. Capitalizing it made "ICloud+" and
+            # "IPhone" in the Apple app's file names.
+            out.append(w)
         else:
             out.append(w[:1].upper() + w[1:])
     return " ".join(out)
 
 
-def unique_path(directory: Path, filename: str, max_path_length: int = 240) -> Path:
+def unique_path(directory: Path, filename: str, max_path_length: int = 240,
+                distinguisher: str = "", ignoring: str = "") -> Path:
     """Return a path in *directory* that does not collide with any existing
-    file, case-insensitively. Collisions get ' (2)', ' (3)', ... suffixes.
-    Never returns a path to an existing file."""
+    file, case-insensitively. Never returns a path to an existing file.
+
+    Two purchases on one day are one name, because a date and a summary are
+    all most rows give. The old answer was ' (2)', which says nothing about
+    which purchase it is and is not even stable, since it depends on what
+    is in the folder at the moment it is written. Delete the first file and
+    the next run gives that name to a different receipt.
+
+    So when the caller knows something that tells the two apart, an order
+    number or a payment id, that goes in the name instead and ' (2)' stays
+    as the last resort. Nothing changes for a name that does not collide
+    (#49, and the same complaint on #43)."""
     directory = Path(directory)
     existing = {p.name.lower() for p in directory.iterdir()} if directory.exists() else set()
+    # A file being renamed does not stand in its own way. Rename asks where a
+    # file belongs while it is still there, and without this a file already
+    # told apart by its order number was pushed on to " (2)".
+    existing.discard((ignoring or "").lower())
     stem, ext = os.path.splitext(filename)
 
     # An empty stem used to return the DIRECTORY itself, because "dir / ''" is
     # just "dir". The caller then tried to write a PDF over its own folder. It
-    # is reachable whenever a scraped title sanitises away to nothing.
+    # is reachable whenever a scraped title sanitizes away to nothing.
     if not stem.strip(" ."):
         stem = "document"
         if not ext:
@@ -303,6 +394,23 @@ def unique_path(directory: Path, filename: str, max_path_length: int = 240) -> P
     candidate = stem + ext
     if len(candidate) > room:
         candidate = shorten(stem, "")
+
+    # What tells this one from the other, when the caller knows. It is
+    # sanitized like any other part of a name, and it is not used when the
+    # stem already carries it, which is how an app that puts the order
+    # number in the summary itself avoids saying it twice.
+    # sanitize_component turns an empty string into "Unnamed", which as a
+    # distinguisher would tell two files apart by telling you nothing.
+    raw_token = str(distinguisher or "").strip()
+    token = sanitize_component(raw_token).strip(" .") if raw_token else ""
+    if candidate.lower() in existing and token and token.lower() not in stem.lower():
+        with_token = "%s %s" % (stem, token)
+        candidate = with_token + ext
+        if len(candidate) > room:
+            candidate = shorten(with_token, "")
+        if candidate.lower() not in existing:
+            return directory / candidate
+        stem = with_token
 
     n = 1
     while candidate.lower() in existing:
@@ -431,12 +539,22 @@ class JsonStore:
 
     def load(self) -> Dict[str, dict]:
         if self.path.exists():
+            broken = False
             try:
                 with open(self.path, "r", encoding="utf-8") as f:
                     raw = json.load(f)
                 if isinstance(raw, dict):
                     self.data = raw
+                else:
+                    # Valid JSON of the wrong shape, a list or a bare null.
+                    # This used to fall through and leave data empty, so the
+                    # next save replaced the file with {} and the record of
+                    # everything ever downloaded went with it. It is as
+                    # unusable as a truncated file, so it is treated as one.
+                    broken = True
             except (json.JSONDecodeError, OSError):
+                broken = True
+            if broken:
                 # Corrupt file: preserve it for inspection, start fresh,
                 # try latest backup.
                 if self.backups_dir is not None:

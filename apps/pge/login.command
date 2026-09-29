@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 PY=.venv/bin/python
+if [ -x "../../.venv/bin/python" ]; then PY=../../.venv/bin/python; fi
 
 CFG=""
 if [ "${1:-}" != "" ]; then CFG="--config config.$1.json"; fi

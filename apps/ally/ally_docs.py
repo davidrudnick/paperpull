@@ -20,6 +20,10 @@ sent to any external service.
 """
 from __future__ import annotations
 
+from paperpull_core import failure
+from paperpull_core import renaming
+from paperpull_core.journal import Journal
+from paperpull_core.api_census import Requests
 from paperpull_core.run_reporting import report_run_result
 
 import argparse
@@ -36,6 +40,8 @@ from paperpull_core import doc_types, receipt_pdf
 from paperpull_core import browser as browser_launcher
 import ally_site as site
 from paperpull_core.models import State
+from paperpull_core.keys import account_component as _account_component
+from paperpull_core.keys import migrate_account_keys as _migrate_account_keys
 from storage import (CsvFile, DOCUMENT_INDEX_COLUMNS, JsonStore, Paths,
                      atomic_write_text, build_pdf_filename, load_config,
                      now_iso, sanitize_component, unique_path)
@@ -100,7 +106,11 @@ class Document:
         for anything discovered without one."""
         if self.document_id:
             return f"id:{self.document_id}"
-        acct = sanitize_component(self.account or "")[:40]
+        # Keep the last four. Cutting to forty characters made two cards
+        # of the same product collide, because the masked digits that say
+        # which one it is sit at the end, and the second card's whole
+        # history was then read as already downloaded and dropped.
+        acct = _account_component(sanitize_component(self.account or ""))
         return f"{self.category}:{self.date}:{sanitize_component(self.title)[:60]}:{acct}"
 
     def to_dict(self) -> dict:
@@ -111,7 +121,20 @@ class Document:
         return cls(**d)
 
 
+def migrate_legacy_keys(records: dict) -> int:
+    """Move records written while the account was cut to forty characters.
+
+    Only a record whose key is exactly the new one with the last four taken
+    off is moved, so nothing is guessed. An archive whose account names were
+    short enough to fit has no such records and nothing happens.
+    """
+    return _migrate_account_keys(records, lambda r: Document.from_dict(r).key)
+
+
 class App:
+    _journal = None
+    _requests = None
+
     def __init__(self, args):
         self.args = args
         # --config lets one copy of the code serve several people/accounts:
@@ -131,6 +154,9 @@ class App:
         self.discovery = JsonStore(self.paths.discovery_json, self.paths.backups)
         self.progress.load()
         self.discovery.load()
+        for store in (self.progress, self.discovery):
+            if migrate_legacy_keys(store.data):
+                store.save(backup=True)
         self.index_csv = CsvFile(self.paths.document_index_csv,
                                  DOCUMENT_INDEX_COLUMNS, self.paths.backups)
         self.rules = doc_types.load_rules()
@@ -208,6 +234,7 @@ class App:
             self._work_page = ally[0] if ally else ctx.new_page()
         else:
             self._work_page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        self.requests
         return self._work_page
 
     def close(self):
@@ -228,18 +255,29 @@ class App:
     # -- session safety ----------------------------------------------------
 
     def check_session(self, page) -> None:
+        # Both of these used to wait at a prompt. Under the panel there is
+        # nobody to answer, and waiting there took the run down with an
+        # end-of-file rather than saying what had happened, so when there
+        # is no console the run stops on its own terms and says what to do
+        # about it. Progress is already saved either way (#48).
         challenge = site.detect_security_challenge(page)
         if challenge:
             self.progress.save(backup=True)
             print(f"\n!! {challenge}")
             print("Stopped. Please resolve it yourself in the browser window.")
             print("I will NOT attempt to bypass any security check.")
-            ask("Press Enter once the page looks normal (or Ctrl+C to quit)... ")
+            if browser_launcher.ask_or_none(
+                    "Press Enter once the page looks normal (or Ctrl+C to quit)... ") is None:
+                print("Then press Resume here to carry on from where this stopped.")
+                raise SystemExit(0)
         if site.looks_signed_out(page):
             self.progress.save(backup=True)
             print("\n!! Ally appears to have signed you out.")
             print("Please sign in again in the open browser window.")
-            ask("Press Enter after you are signed in... ")
+            if browser_launcher.ask_or_none(
+                    "Press Enter after you are signed in... ") is None:
+                print("Then press Resume here to carry on from where this stopped.")
+                raise SystemExit(0)
             site.goto_documents(page)
 
     # -- commands ----------------------------------------------------------
@@ -340,7 +378,7 @@ class App:
             # cannot say which account each belongs to, so the filename says
             # only which one it is, traceably: the last 4 of Ally's documentId.
             # Inventing "Individual"/"Joint" here is exactly the mistake that
-            # mislabelled the trust statements.
+            # mislabeled the trust statements.
             full_summary = f"{summary} - {doc_id[-4:]}" if doc_id else summary
         else:
             full_summary = summary
@@ -349,8 +387,8 @@ class App:
                 account, {"count": 0, "label": label, "ira": bool(d.get("ira"))})
             reg["count"] += 1
         else:
-            self.stats.setdefault("unlabelled", 0)
-            self.stats["unlabelled"] += 1
+            self.stats.setdefault("unlabeled", 0)
+            self.stats["unlabeled"] += 1
         doc = Document(title=title, category=category, summary=full_summary,
                        date=date, confidence=confidence, account=account,
                        date_text=date, document_id=doc_id,
@@ -430,7 +468,7 @@ class App:
             # account table once downloaded - these labels are the fallback for
             # when that cannot be read.
             regs = self.stats.get("registrations") or {}
-            un = self.stats.get("unlabelled", 0)
+            un = self.stats.get("unlabeled", 0)
             if regs or un:
                 print("\n  Statements are named from each PDF's own account list.")
                 print("  What Ally's metadata says about them:")
@@ -497,10 +535,17 @@ class App:
                 print("  Already downloaded and verified - skipping.")
                 self.stats["skipped_completed"] += 1
                 continue
-            filename = build_pdf_filename(doc.date, doc.summary, "")
+            filename = build_pdf_filename(doc.date, doc.summary, "", record=doc)
             if dry_run:
                 print(f"  DRY RUN - would save: {filename}")
                 continue
+            # Which document the run is on, so a failure file says how far
+            # it got and whether it ever reached a second one.
+            try:
+                self.journal.op("next_item" if i > 1 else "open_item",
+                                "take a document", ordinal=i)
+            except Exception:
+                pass
             try:
                 self.download_one(page, doc, filename)
             except KeyboardInterrupt:
@@ -522,7 +567,7 @@ class App:
         who they were addressed to, the addressee) come from the document's
         own first page.
 
-        The extraction is structural and offline; if it does not recognise the
+        The extraction is structural and offline; if it does not recognize the
         layout the file KEEPS the name discovery gave it, and nothing is
         guessed. Renaming is cosmetic either way: identity is documentId, so a
         later improvement here can rename an archive without re-downloading it.
@@ -537,7 +582,7 @@ class App:
             log.info("statement facts failed for %s: %s", out_path.name, e)
             return out_path
         if not facts.ok:
-            log.info("unrecognised statement layout: %s", out_path.name)
+            log.info("unrecognized statement layout: %s", out_path.name)
             doc.notes = (doc.notes + "; " if doc.notes else "") + \
                 "could not read the account table; name is from Ally's metadata"
             return out_path
@@ -554,7 +599,7 @@ class App:
 
         doc.account = facts.addressee or doc.account
         doc.summary = summary
-        filename = build_pdf_filename(doc.date, summary, "")
+        filename = build_pdf_filename(doc.date, summary, "", record=doc)
         if filename == out_path.name:
             return out_path
         target = unique_path(out_path.parent, filename,
@@ -577,7 +622,12 @@ class App:
         """
         self.check_session(page)
         folder = self.paths.folder_for(doc.category)
-        out_path = unique_path(folder, filename, self.config["max_path_length"])
+        # The last of the document id, used only if the name is taken.
+        # Two documents on one day used to differ by " (2)", which says
+        # nothing about which is which and moves between them when a file
+        # is deleted (#49, and the same complaint on #43).
+        out_path = unique_path(folder, filename, self.config["max_path_length"],
+                               distinguisher=(doc.document_id or "")[-6:])
         if out_path.name != filename:
             self.stats["duplicate_filenames"] += 1
 
@@ -607,6 +657,7 @@ class App:
                                "(see the log; it may pre-date what Ally's "
                                "year picker can reach)")
             self._write_row(doc, "Capture failed", "Needs Manual Review")
+            self.write_failure('capture the document', 'the document would not render')
             self.stats["manual_review"] += 1
             print("  Could not capture this document - marked for manual review.")
             return
@@ -618,6 +669,7 @@ class App:
                 self._record(doc, State.NEEDS_MANUAL_REVIEW,
                              notes="Downloaded archive contained no PDF")
                 self._write_row(doc, "Archive with no PDF", "Needs Manual Review")
+                self.write_failure('open the downloaded archive', 'the archive held no pdf')
                 self.stats["manual_review"] += 1
                 print("  !! Download was an archive with no PDF - manual review.")
                 return
@@ -646,6 +698,7 @@ class App:
             self._record(doc, State.NEEDS_MANUAL_REVIEW,
                          notes=f"PDF validation failed: {result.reason}")
             self._write_row(doc, "Validation failed", "Needs Manual Review")
+            self.write_failure('validate the saved pdf', 'the saved pdf did not validate')
             self.stats["manual_review"] += 1
             print(f"  !! Validation failed ({result.reason}); moved to Manual Review.")
             return
@@ -653,6 +706,7 @@ class App:
         doc.pdf_size, doc.pdf_pages = result.size_bytes, result.page_count
         doc.downloaded_ok = True   # done for good, even if the file is deleted later
         self._record(doc, State.COMPLETED)
+        self.journal.checkpoint('a document is saved')
         self._write_row(doc, "Downloaded", "Completed")
         self.stats["new_files"].append(str(out_path))
         if doc.date:
@@ -759,6 +813,17 @@ class App:
         print(f"Resuming: {len(docs)} document(s) remaining.")
         self.process(docs, dry_run=self.args.dry_run)
 
+
+    def cmd_rename(self):
+        """Rename what is already downloaded, without downloading it again.
+
+        A naming scheme improves and the files on disk keep the old one.
+        Nothing about them needs fetching, only their names are wrong, so
+        nothing is asked of the provider here (#43, #49). A preview
+        unless --apply is given."""
+        self.stats["mode"] = "rename"
+        renaming.run_for(self, apply_changes=bool(getattr(self.args, "apply", False)))
+
     def cmd_verify(self):
         self.stats["mode"] = "verify"
         rows = self.index_csv.read_all()
@@ -778,6 +843,101 @@ class App:
                 row["Verified At"] = now_iso()
         self.index_csv.rewrite(rows)
         print(f"\nVerified {len(rows)} index rows; {bad} problem(s).")
+
+    @property
+    def requests(self):
+        """Which of the provider's own calls happened, and what came back.
+
+        Made on first use like the journal, and started at once, because
+        it only sees what arrives after it starts listening. An app that
+        drives an API rather than a page has no selectors for the census
+        to count, and this is what it has instead."""
+        if self._requests is None:
+            self._requests = Requests(getattr(self, "_work_page", None),
+                                      getattr(site, "is_safe_url", None))
+            self._requests.start()
+        return self._requests
+
+    @property
+    def journal(self):
+        """The run's journal, made the first time anything writes to it.
+
+        Lazy, because a run that never opens a page has nothing to say
+        and an app that fails before the browser is up must not fail
+        differently because of this. It watches every selector the app
+        declares, since choosing between them is a decision nobody can
+        make before the first failure."""
+        if self._journal is None:
+            self._journal = Journal(getattr(self, "_work_page", None),
+                                    getattr(site, "FALLBACK", None))
+        return self._journal
+
+    def write_failure(self, step: str, reason: str, text: str = "",
+                      postmortem: dict = None) -> None:
+        """What the page looked like when this went wrong, to a file.
+
+        Written without anybody having to know to ask for it, because a
+        tester who has to be told to run a second command is a tester who
+        sends one file and waits a day for the request for the other.
+
+        One per run. A run where thirty documents fail for one reason
+        does not need thirty files, and the first is taken while the page
+        is still sitting on the thing that broke."""
+        if self.stats.get("failure_files"):
+            return
+        extra = {"postmortem": postmortem} if postmortem else None
+        # A checkpoint at the moment it gave up. It is also what makes the
+        # journal when nothing had written to it yet, and every tester file
+        # sent in on 2026-09-25 came back without one for that reason.
+        try:
+            if getattr(self, "_work_page", None) is not None:
+                self.journal.checkpoint("when the run gave up")
+        except Exception:
+            pass
+        path = failure.write_failure(
+            self.paths.diagnostics,
+            command=self.stats.get("mode") or "run",
+            step=step, reason=reason,
+            page=getattr(self, "_work_page", None),
+            selectors=getattr(site, "FALLBACK", None),
+            journal=self._journal,
+            requests=self._requests,
+            provider='Ally', text=text, extra=extra)
+        if not path:
+            return
+        self.stats["failure_files"] = 1
+        try:
+            import json as _failure_json
+            said = failure.summarize(_failure_json.loads(
+                Path(path).read_text(encoding="utf-8")))
+        except Exception:
+            said = []
+        if said:
+            print("  What it noticed:")
+            for line in said[:6]:
+                print("    - %s" % line)
+        print("  Read it through, then attach it to this provider's issue on")
+        print("  GitHub. It is the one thing that saves a round of guessing.")
+
+    def write_survey(self) -> None:
+        """The survey Diagnose is safe to send.
+
+        Diagnose writes a detailed file for repairing this provider, and
+        that file holds the page's own title, the URL with its query
+        string, the text of the rows it found and the labels of the
+        controls. The panel said to attach it to an issue, which is not
+        something that file is for.
+
+        So this is written beside it, on the same list of what may leave
+        that the failure file uses, and it is the one to send.
+        """
+        failure.write_survey(
+            self.paths.diagnostics,
+            page=getattr(self, "_work_page", None),
+            selectors=getattr(site, "FALLBACK", None),
+            journal=self._journal,
+            requests=self._requests,
+            provider='Ally')
 
     def cmd_diagnose(self):
         self.stats["mode"] = "diagnose"
@@ -865,6 +1025,9 @@ class App:
         out = self.paths.diagnostics / "diagnose-documents.json"
         atomic_write_text(out, _json.dumps(info, indent=2))
         print(f"Wrote {out}")
+        print("  That is the detailed file, for repairing this provider. It")
+        print("  carries the page's own words, so it stays on this machine")
+        print("  unless you decide to send it.")
         print(f"Rows collected: {info.get('collected', '?')}")
         refused = [s for s in info.get("selects", [])
                    if s.get("refused")]
@@ -894,6 +1057,16 @@ class App:
             print(f"  [{s['category']}] {s['date']}  {s['summary']}  <- {s['title'][:50]}")
 
     # -- summary -----------------------------------------------------------
+
+    def cmd_record(self):
+        """Record the path a person takes to a document, so this app can be
+        written or repaired to take the same one. Downloads nothing, and
+        captures no keystroke. The whole thing is in the core."""
+        self.stats["mode"] = "record"
+        from paperpull_core.recorder import record_session
+        record_session(self.page(), site, self.paths.diagnostics,
+                       provider='Ally',
+                       owner=self.config.get("owner", ""))
 
     def write_run_summary(self):
         s = self.stats
@@ -945,8 +1118,13 @@ def build_parser() -> argparse.ArgumentParser:
             ("all", "download everything in scope (asks for confirmation)"),
             ("resume", "continue an interrupted run"),
             ("verify", "re-validate every saved PDF"),
-            ("diagnose", "dump the Documents page structure (no downloads)")]:
+            ("rename", "rename downloaded files to this app's current naming"),
+            ("diagnose", "dump the Documents page structure (no downloads)"),
+            ("record", "record your own path to a document, so this app can be repaired (downloads nothing)"),
+            ]:
         ap.add_argument(f"--{name}", action="store_true", help=help_text)
+    ap.add_argument("--apply", action="store_true",
+                    help="with --rename, actually rename (default is a preview)")
     ap.add_argument("--dry-run", action="store_true",
                     help="plan filenames but download nothing")
     ap.add_argument("--year", type=int)
@@ -987,8 +1165,13 @@ def main(argv=None):
             app.cmd_resume()
         elif args.verify:
             app.cmd_verify()
+        elif args.rename:
+            app.cmd_rename()
+        elif args.record:
+            app.cmd_record()
         elif args.diagnose:
             app.cmd_diagnose()
+            app.write_survey()
         elif args.dry_run:
             app.cmd_run("dry-run")
         else:
@@ -1000,7 +1183,11 @@ def main(argv=None):
     finally:
         app.progress.save()
         app.discovery.save()
-        if app.stats["mode"]:
+        # A run that only looked at the page writes no summary. The
+        # summary rewrites new-this-run.txt, and for a mode that
+        # downloads nothing that means replacing the real list from
+        # the last download run with an empty one.
+        if app.stats["mode"] not in ("", "diagnose", "record"):
             app.write_run_summary()
         app.close()
     return 0

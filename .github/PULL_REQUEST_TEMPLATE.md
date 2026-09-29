@@ -18,7 +18,7 @@
       provider.
 - [ ] **No credential handling.** The user signs in themselves; the app attaches
       to that session and only reads. No password/2FA code anywhere.
-- [ ] **No private data committed.** `git status` shows only source — no real
+- [ ] **No private data committed.** `git status` shows only source, no real
       `config.json`, no `*-browser-profile/`, no PDFs, CSVs, logs, or state. No
       real names, account numbers, balances, or personal paths in code,
       comments, tests, or fixtures.
@@ -28,7 +28,7 @@
 ## For a new provider
 
 - [ ] Cloned the closest existing app; entry files renamed to `<slug>_*.py`.
-- [ ] Uses a **unique CDP port** (9222–9241 are taken; used 9242+).
+- [ ] Uses a **unique CDP port**, the next one after the highest in `apps/*/config.example.json`.
 - [ ] Added a `config.example.json` (no real paths/owner).
 - [ ] Added the provider to [PROVIDERS.md](../blob/main/PROVIDERS.md).
 - [ ] Verified end-to-end against my real account: `--discover` lists documents,

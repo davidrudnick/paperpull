@@ -23,6 +23,10 @@ Authentication is always manual (--login opens a browser and waits for you).
 """
 from __future__ import annotations
 
+from paperpull_core import failure
+from paperpull_core import renaming
+from paperpull_core.journal import Journal
+from paperpull_core.api_census import Requests
 from paperpull_core.run_reporting import report_run_result
 
 import argparse
@@ -38,10 +42,9 @@ from typing import List, Optional
 from paperpull_core import classification, receipt_pdf
 from paperpull_core import browser as browser_launcher
 import walmart_site as site
-from paperpull_core.models import (DONE_STATES, IN_STORE, ONLINE, Item, Purchase, State)
+from paperpull_core.models import (IN_STORE, ONLINE, Item, Purchase, State)
 from storage import (CsvFile, JsonStore, ORDER_HISTORY_COLUMNS, Paths,
-                     RECEIPT_INDEX_COLUMNS, atomic_write_text, backup_file,
-                     build_pdf_filename, load_config, now_iso, title_case,
+                     RECEIPT_INDEX_COLUMNS, atomic_write_text, build_pdf_filename, load_config, now_iso, title_case,
                      unique_path)
 
 from storage import ensure_owner, PROJECT_DIR, set_filename_owner
@@ -64,6 +67,9 @@ def ask(prompt: str) -> str:
 # ---------------------------------------------------------------------------
 
 class App:
+    _journal = None
+    _requests = None
+
     def __init__(self, args):
         self.args = args
         # --config lets one copy of the code serve several people/accounts:
@@ -175,7 +181,7 @@ class App:
         """A dedicated work page carrying the print-suppression hook.
 
         In CDP mode a fresh page in the existing (authenticated) context
-        shares the user's session AND receives our init script — existing
+        shares the user's session AND receives our init script, existing
         human-opened tabs are left untouched."""
         ctx = self.browser()
         if self._work_page is not None and not self._work_page.is_closed():
@@ -188,6 +194,7 @@ class App:
             self._work_page.add_init_script(receipt_pdf.PRINT_SUPPRESS_INIT_SCRIPT)
         except Exception:
             pass
+        self.requests
         return self._work_page
 
     def close(self):
@@ -215,18 +222,29 @@ class App:
 
     def check_session(self, page) -> None:
         """Raise/pause on sign-out or security challenges."""
+        # Both of these used to wait at a prompt. Under the panel there is
+        # nobody to answer, and waiting there took the run down with an
+        # end-of-file rather than saying what had happened, so when there
+        # is no console the run stops on its own terms and says what to do
+        # about it. Progress is already saved either way (#48).
         challenge = site.detect_security_challenge(page)
         if challenge:
             self.progress.save(backup=True)
             print(f"\n!! {challenge}")
             print("Processing stopped. Please resolve the challenge yourself in the")
             print("browser window. I will NOT attempt to bypass it.")
-            ask("Press Enter once the page looks normal again (or Ctrl+C to quit)... ")
+            if browser_launcher.ask_or_none(
+                    "Press Enter once the page looks normal again (or Ctrl+C to quit)... ") is None:
+                print("Then press Resume here to carry on from where this stopped.")
+                raise SystemExit(0)
         if site.looks_signed_out(page):
             self.progress.save(backup=True)
             print("\n!! Walmart appears to have signed you out.")
             print("Please sign in manually in the open browser window.")
-            ask("Press Enter after you are signed in again... ")
+            if browser_launcher.ask_or_none(
+                    "Press Enter after you are signed in again... ") is None:
+                print("Then press Resume here to carry on from where this stopped.")
+                raise SystemExit(0)
             site.goto_orders(page)
 
     # -- commands -----------------------------------------------------------
@@ -276,7 +294,13 @@ class App:
         print("This tool never touches your credentials.\n")
         page = self.page()
         page.goto(site.URLS["home"], wait_until="domcontentloaded", timeout=60000)
-        ask("Press Enter here AFTER you have finished signing in... ")
+        # Under the panel there is no console to press Enter at, and this
+        # used to read end-of-file and stop the run before it could check
+        # anything, with a message about .bat files (#48). Nothing is
+        # checked in that case because there is nothing to check yet, and
+        # the browser is deliberately left open.
+        if not browser_launcher.pause_for_sign_in():
+            return
         site.goto_orders(page)
         if site.looks_signed_out(page):
             print("It still looks like you are signed out; the orders page bounced to login.")
@@ -364,6 +388,12 @@ class App:
             purchases = [p for p in purchases if p.order_number == args.order_number]
         if args.year:
             purchases = [p for p in purchases if p.purchase_date.startswith(str(args.year))]
+        # Hard floor: never process orders before the configured start date, so
+        # an archive that already holds the older years never walks them again.
+        floor = args.start_date or self.config.get("default_start_date")
+        if floor:
+            purchases = [p for p in purchases
+                         if p.purchase_date and p.purchase_date >= floor]
         if args.start_date:
             purchases = [p for p in purchases if p.purchase_date and p.purchase_date >= args.start_date]
         if args.end_date:
@@ -413,6 +443,13 @@ class App:
                 print("  Already completed and PDF verified - skipping.")
                 self.stats["skipped_completed"] += 1
                 continue
+            # Which document the run is on, so a failure file says how far
+            # it got and whether it ever reached a second one.
+            try:
+                self.journal.op("next_item" if i > 1 else "open_item",
+                                "take a document", ordinal=i)
+            except Exception:
+                pass
             try:
                 self.process_one(page, purchase, dry_run=dry_run)
             except KeyboardInterrupt:
@@ -437,6 +474,8 @@ class App:
                     self._record_state(purchase, State.NEEDS_MANUAL_REVIEW,
                                        notes="Details page failed to load twice")
                     self.stats["manual_review"] += 1
+                    self.write_failure("open the document",
+                                       "it would not open twice")
                     return
                 time.sleep(5)
                 site.goto_orders(page)
@@ -469,7 +508,7 @@ class App:
             return
 
         if dry_run:
-            filename = build_pdf_filename(purchase.purchase_date, purchase.summary)
+            filename = build_pdf_filename(purchase.purchase_date, purchase.summary, record=purchase)
             print(f"  DRY RUN - would save: {filename}")
             return
 
@@ -479,7 +518,6 @@ class App:
             return  # state already recorded inside
 
         # ---- CSVs + progress ----
-        status = State.NEEDS_MANUAL_REVIEW.value if review_needed else State.COMPLETED.value
         receipt_status = "Downloaded"
         self._write_csv_rows(purchase, receipt_status=receipt_status,
                              processing_status="Review Needed" if review_needed else "Completed",
@@ -492,6 +530,7 @@ class App:
         if purchase.document_type == "Invoice":
             self.stats["invoices_downloaded"] += 1
         else:
+            self.journal.checkpoint('a document is saved')
             self.stats["receipts_downloaded"] += 1
         print(f"  Saved: {purchase.pdf_filename}")
 
@@ -526,8 +565,9 @@ class App:
         folder = self.paths.invoices if is_online else self.paths.folder_for(
             purchase.purchase_type)
         filename = build_pdf_filename(purchase.purchase_date, purchase.summary,
-                                      purchase.document_type)
-        out_path = unique_path(folder, filename, self.config["max_path_length"])
+                                      purchase.document_type, record=purchase)
+        out_path = unique_path(folder, filename, self.config["max_path_length"],
+                               distinguisher=purchase.order_number)
         if out_path.name != filename:
             self.stats["duplicate_filenames"] += 1
 
@@ -636,7 +676,7 @@ class App:
         invoices = site.find_invoice_controls(page)
         if invoices and self.config.get("include_invoices"):
             purchase.document_type = "Invoice"
-            filename = build_pdf_filename(purchase.purchase_date, purchase.summary, "Invoice")
+            filename = build_pdf_filename(purchase.purchase_date, purchase.summary, "Invoice", record=purchase)
             out_path = unique_path(self.paths.invoices, filename,
                                    self.config["max_path_length"])
             try:
@@ -817,6 +857,17 @@ class App:
         print(f"Resuming: {len(pend)} incomplete purchase(s).")
         self.process_purchases(pend, dry_run=self.args.dry_run)
 
+
+    def cmd_rename(self):
+        """Rename what is already downloaded, without downloading it again.
+
+        A naming scheme improves and the files on disk keep the old one.
+        Nothing about them needs fetching, only their names are wrong, so
+        nothing is asked of the provider here (#43, #49). A preview
+        unless --apply is given."""
+        self.stats["mode"] = "rename"
+        renaming.run_for(self, apply_changes=bool(getattr(self.args, "apply", False)))
+
     def cmd_verify(self):
         self.stats["mode"] = "verify"
         rows = self.index_csv.read_all()
@@ -848,8 +899,12 @@ class App:
 
     def cmd_review_names(self):
         rows = self.index_csv.read_all()
-        review = [r for r in rows if r.get("Classification Confidence") == "Low"
-                  or "Review" in (r.get("Processing Status") or "")]
+        # A row somebody already renamed is left out, even one renamed
+        # before its confidence was marked High as well (#47).
+        review = [r for r in rows
+                  if (r.get("Classification Confidence") == "Low"
+                      or "Review" in (r.get("Processing Status") or ""))
+                  and "renamed via --review-names" not in (r.get("Notes") or "")]
         if not review:
             print("No receipts need name review.")
             return
@@ -876,7 +931,7 @@ class App:
             old_path = Path(r.get("PDF Full Path") or "")
             date = r.get("Purchase Date") or (old_path.name[:10] if old_path.name else "")
             doc_type = r.get("Document Type") or "Receipt"
-            new_name = build_pdf_filename(date, new_summary, doc_type)
+            new_name = build_pdf_filename(date, new_summary, doc_type, record=prog)
             if old_path.exists():
                 new_path = unique_path(old_path.parent, new_name,
                                        self.config["max_path_length"])
@@ -889,6 +944,7 @@ class App:
             r["PDF Full Path"] = str(new_path)
             r["Purchase Summary"] = new_summary
             r["Processing Status"] = "Completed"
+            r["Classification Confidence"] = "High"
             r["Notes"] = (r.get("Notes", "") + "; renamed via --review-names").strip("; ")
             for orow in order_rows:
                 if (orow.get("Order or Receipt Number") == r.get("Order or Receipt Number")
@@ -906,6 +962,101 @@ class App:
             self.index_csv.rewrite(rows)
             self.order_csv.rewrite(order_rows)
             print("CSV files and progress.json updated.")
+
+    @property
+    def requests(self):
+        """Which of the provider's own calls happened, and what came back.
+
+        Made on first use like the journal, and started at once, because
+        it only sees what arrives after it starts listening. An app that
+        drives an API rather than a page declares no selectors for the
+        census to count, and this is what it has instead."""
+        if self._requests is None:
+            self._requests = Requests(getattr(self, "_work_page", None),
+                                      getattr(site, "is_safe_url", None))
+            self._requests.start()
+        return self._requests
+
+    @property
+    def journal(self):
+        """The run's journal, made the first time anything writes to it.
+
+        Lazy, because a run that never opens a page has nothing to say
+        and an app that fails before the browser is up must not fail
+        differently because of this. It watches every selector the app
+        declares, since choosing between them is a decision nobody can
+        make before the first failure."""
+        if self._journal is None:
+            self._journal = Journal(getattr(self, "_work_page", None),
+                                    getattr(site, "FALLBACK", None))
+        return self._journal
+
+    def write_failure(self, step: str, reason: str, text: str = "",
+                      postmortem: dict = None) -> None:
+        """What the page looked like when this went wrong, to a file.
+
+        Written without anybody having to know to ask for it, because a
+        tester who has to be told to run a second command is a tester who
+        sends one file and waits a day for the request for the other.
+
+        One per run. A run where thirty documents fail for one reason
+        does not need thirty files, and the first is taken while the page
+        is still sitting on the thing that broke."""
+        if self.stats.get("failure_files"):
+            return
+        extra = {"postmortem": postmortem} if postmortem else None
+        # A checkpoint at the moment it gave up. It is also what makes the
+        # journal when nothing had written to it yet, and every tester file
+        # sent in on 2026-09-25 came back without one for that reason.
+        try:
+            if getattr(self, "_work_page", None) is not None:
+                self.journal.checkpoint("when the run gave up")
+        except Exception:
+            pass
+        path = failure.write_failure(
+            self.paths.diagnostics,
+            command=self.stats.get("mode") or "run",
+            step=step, reason=reason,
+            page=getattr(self, "_work_page", None),
+            selectors=getattr(site, "FALLBACK", None),
+            journal=self._journal,
+            requests=self._requests,
+            provider='Walmart', text=text, extra=extra)
+        if not path:
+            return
+        self.stats["failure_files"] = 1
+        try:
+            import json as _failure_json
+            said = failure.summarize(_failure_json.loads(
+                Path(path).read_text(encoding="utf-8")))
+        except Exception:
+            said = []
+        if said:
+            print("  What it noticed:")
+            for line in said[:6]:
+                print("    - %s" % line)
+        print("  Read it through, then attach it to this provider's issue on")
+        print("  GitHub. It is the one thing that saves a round of guessing.")
+
+    def write_survey(self) -> None:
+        """The survey Diagnose is safe to send.
+
+        Diagnose writes a detailed file for repairing this provider, and
+        that file holds the page's own title, the URL with its query
+        string, the text of the rows it found and the labels of the
+        controls. The panel said to attach it to an issue, which is not
+        something that file is for.
+
+        So this is written beside it, on the same list of what may leave
+        that the failure file uses, and it is the one to send.
+        """
+        failure.write_survey(
+            self.paths.diagnostics,
+            page=getattr(self, "_work_page", None),
+            selectors=getattr(site, "FALLBACK", None),
+            journal=self._journal,
+            requests=self._requests,
+            provider='Walmart')
 
     def cmd_diagnose(self):
         """Inspect one purchase per type and record local diagnostics."""
@@ -957,10 +1108,23 @@ class App:
             out = self.paths.diagnostics / f"diagnose-{ptype}-{p.order_number}.json"
             atomic_write_text(out, _json.dumps(info, indent=2))
             print(f"  Wrote {out}")
+            print("  That is the detailed file, for repairing this provider. It")
+            print("  carries the page's own words, so it stays on this machine")
+            print("  unless you decide to send it.")
             print(f"  Print-receipt controls found: {info.get('print_receipt_controls', '?')}; "
                   f"receipt section: {info.get('receipt_section_found', '?')}")
 
     # -- run summary --------------------------------------------------------
+
+    def cmd_record(self):
+        """Record the path a person takes to a receipt, so this app can be
+        written or repaired to take the same one. Downloads nothing, and
+        captures no keystroke. The whole thing is in the core."""
+        self.stats["mode"] = "record"
+        from paperpull_core.recorder import record_session
+        record_session(self.page(), site, self.paths.diagnostics,
+                       provider='Walmart',
+                       owner=self.config.get("owner", ""))
 
     def write_run_summary(self):
         s = self.stats
@@ -1020,11 +1184,15 @@ def build_parser() -> argparse.ArgumentParser:
         ("all", "process everything (asks for confirmation)"),
         ("resume", "resume incomplete purchases"),
         ("verify", "re-validate every indexed PDF"),
+        ("rename", "rename downloaded files to this app's current naming"),
         ("review-names", "interactively fix low-confidence names"),
         ("diagnose", "inspect one purchase per section, write diagnostics"),
+        ("record", "record your own path to a receipt, so this app can be repaired"),
     ]
     for name, help_text in modes:
         ap.add_argument(f"--{name}", action="store_true", help=help_text)
+    ap.add_argument("--apply", action="store_true",
+                    help="with --rename, actually rename (default is a preview)")
     ap.add_argument("--dry-run", action="store_true",
                     help="extract and plan filenames but save no PDFs/CSVs")
     ap.add_argument("--year", type=int)
@@ -1076,10 +1244,15 @@ def main(argv=None):
             app.cmd_resume()
         elif args.verify:
             app.cmd_verify()
+        elif args.rename:
+            app.cmd_rename()
         elif getattr(args, "review_names"):
             app.cmd_review_names()
+        elif args.record:
+            app.cmd_record()
         elif args.diagnose:
             app.cmd_diagnose()
+            app.write_survey()
         elif args.dry_run:
             app.cmd_run([ONLINE, IN_STORE], "dry-run")
         else:
@@ -1091,7 +1264,11 @@ def main(argv=None):
     finally:
         app.progress.save()
         app.discovery.save()
-        if app.stats["mode"]:
+        # A run that only looked at the page writes no summary. The
+        # summary rewrites new-this-run.txt, and for a mode that
+        # downloads nothing that means replacing the real list from
+        # the last download run with an empty one.
+        if app.stats["mode"] not in ("", "diagnose", "record"):
             app.write_run_summary()
         app.close()
     return 0

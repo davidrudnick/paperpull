@@ -149,7 +149,7 @@ def test_empty_or_ambiguous_control_not_safe():
 # Ally's dashboard instead of the statements page, and the account-picker
 # lookup matched the money-TRANSFER widget's <select id="fromAccount">, then
 # tried to set it. Nothing was submitted, but selecting an option in a transfer
-# form is not read-only behaviour. Dropdowns are now identity-checked.
+# form is not read-only behavior. Dropdowns are now identity-checked.
 
 def test_transfer_widget_selects_are_refused():
     """The exact identities Ally's transfer widget presents."""
@@ -355,7 +355,7 @@ def test_rows_outside_the_table_are_ignored():
     assert len(facts.accounts) == 2
 
 
-def test_unrecognised_layout_returns_nothing_rather_than_guessing():
+def test_unrecognized_layout_returns_nothing_rather_than_guessing():
     for junk in ("", "no table here at all", "Account Name Account Number"):
         assert not site.parse_statement_text(junk).ok
 

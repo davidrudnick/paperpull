@@ -108,7 +108,7 @@ PRINT_TO_PDF_OPTIONS = {
 
 
 # Hide everything except the receipt container (and its ancestor chain) so
-# the printed PDF contains only the receipt — no page navigation or buttons.
+# the printed PDF contains only the receipt, no page navigation or buttons.
 ISOLATE_SCRIPT = """
 (sel) => {
   const el = document.querySelector(sel);
@@ -321,10 +321,21 @@ def print_frame_to_pdf(page, frame, out_path: Path) -> None:
 
 
 def render_url_headless(playwright, storage_state: dict, url: str,
-                        out_path: Path, wait_ms: int = 4000) -> None:
+                        out_path: Path, wait_ms: int = 4000,
+                        is_safe_url=None) -> None:
     """Fallback: render *url* to PDF in a temporary local headless Chromium
     that reuses the signed-in cookies. page.pdf() is headless-only, which is
-    why this exists."""
+    why this exists.
+
+    `is_safe_url` is the app's own guard, and the address has to pass it.
+    Every other fetch in the project is host checked and this one was not,
+    although it is reached from a page-supplied address and only ever runs
+    after the ordinary path has already failed, which is exactly when that
+    address is least trustworthy.
+    """
+    if is_safe_url is not None and not is_safe_url(url):
+        raise ValueError("refusing to render an address that is not the "
+                         "provider's: %r" % (url or "")[:120])
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     browser = playwright.chromium.launch(headless=True)
@@ -410,6 +421,18 @@ def save_download(download, out_path: Path) -> None:
 # Validation
 # ---------------------------------------------------------------------------
 
+def pdf_text(path: Path) -> str:
+    """Every page's text, newline-joined. Empty on any failure, never raises,
+    because a caller reparsing hundreds of receipts wants to skip one bad
+    file rather than stop."""
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(str(path))
+        return "\n".join((pg.extract_text() or "") for pg in reader.pages)
+    except Exception:
+        return ""
+
+
 def validate_pdf(path: Path, min_bytes: int = 3000,
                  expect_tokens: Optional[Iterable[str]] = None) -> ValidationResult:
     """Verify a saved PDF: exists, non-trivial size, PDF signature, opens
@@ -426,7 +449,8 @@ def validate_pdf(path: Path, min_bytes: int = 3000,
         return ValidationResult(False, f"File smaller than minimum ({size} < {min_bytes} bytes)",
                                 size_bytes=size)
     try:
-        head = path.open("rb").read(1024)
+        with path.open("rb") as f:
+            head = f.read(1024)
     except OSError as e:
         return ValidationResult(False, f"Cannot read file: {e}", size_bytes=size)
     if PDF_MAGIC not in head[:64]:

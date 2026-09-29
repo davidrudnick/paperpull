@@ -10,6 +10,7 @@ about that app. These run across all of them at once, so a new provider cannot
 quietly ship without the same protection.
 """
 import importlib
+import re
 import sys
 from pathlib import Path
 
@@ -226,3 +227,151 @@ def test_this_app_lets_the_user_choose_which_browser(app):
         assert "fetch_bundled_chromium" in src, (
             "%s neither offers the browser choice nor asks before downloading"
             % app.name)
+
+
+# -- a click on "any link in the row" is a click on Pay ----------------------
+
+# A guard the app defines and calls somewhere is not the same as a guard that
+# stands between a data-chosen element and the click. One provider arrived
+# with a working is_safe_control, called it only in its diagnose dump, and
+# fetched each bill by clicking the first link or button in the row when the
+# labeled one was not found. A bill row also holds Pay. The reachability
+# test above passed it, because the guard was called with real text.
+#
+# What is caught here is the shape of that mistake, read from the source.
+# A function that clicks something, and reaches for elements by a selector
+# that names no control in particular (a bare tag, a bare role, a wildcard),
+# must also consult a guard. A selector that names its target ("#getmybill",
+# "button[aria-label*='View']", a role with a name) chose the control itself,
+# and is left alone.
+
+# is_safe_url is deliberately not on this list. It guards where a fetch goes,
+# not what a click lands on, and the function that got through called it.
+_GUARD_NAMES = re.compile(
+    r"\b(is_safe_(?!url\b)\w+|is_\w*_control|pick_document_control|is_page_picker|"
+    r"is_page_option|\w*_CONTROL_RE|FORBIDDEN\w*)\b")
+# Selector entries that could land on any control at all.
+_BARE_SELECTORS = {"a", "button", "*", "[role='button']", '[role="button"]',
+                   "input", "a[href]", "[type='submit']", '[type="submit"]'}
+_SELECTOR_METHODS = {"locator", "query_selector", "query_selector_all"}
+# Roles that commit something when clicked. An unnamed get_by_role on one of
+# these is "every button on the page".
+_ACTING_ROLES = {"button", "link", "menuitem", "checkbox", "radio", "switch"}
+
+
+def unguarded_broad_clicks(source: str):
+    """Functions that click, reach for controls by a selector that names none,
+    and never consult a guard. Returns [(function, selector), ...]."""
+    import ast
+    tree = ast.parse(source)
+    out = []
+    for fn in (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)):
+        body = ast.get_source_segment(source, fn) or ""
+        if ".click(" not in body or _GUARD_NAMES.search(body):
+            continue
+        for node in ast.walk(fn):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            method = node.func.attr
+            first = node.args[0].value if (node.args and isinstance(node.args[0], ast.Constant)
+                                           and isinstance(node.args[0].value, str)) else None
+            if method in _SELECTOR_METHODS and first is not None:
+                parts = [p.strip() for p in first.split(",")]
+                if any(p in _BARE_SELECTORS for p in parts):
+                    out.append((fn.name, first))
+            elif (method == "get_by_role" and first in _ACTING_ROLES
+                  and not any(k.arg == "name" for k in node.keywords)):
+                out.append((fn.name, "get_by_role(%r) with no name" % first))
+    return out
+
+
+@pytest.mark.parametrize("app", APPS, ids=lambda d: d.name)
+def test_no_function_clicks_whatever_a_bare_selector_finds(app):
+    for py in sorted(app.glob("*.py")):
+        if "test" in py.name:
+            continue
+        found = unguarded_broad_clicks(py.read_text(encoding="utf-8-sig"))
+        assert not found, (
+            "%s/%s clicks what a bare selector finds without a guard: %s"
+            % (app.name, py.name, found))
+
+
+def test_the_bare_selector_check_catches_the_shape_that_got_through():
+    """The PG&E fetch as it arrived, reduced to its shape. If this ever stops
+    firing, the check above is decoration."""
+    arrived = '''
+def download_bill(page, doc, out_path):
+    rows = page.query_selector_all("table tbody tr, [role='row']")
+    link = rows[doc["row_index"]].query_selector(
+        "a:has-text('View Bill PDF'), button:has-text('View Bill PDF'), a, button")
+    href = link.get_attribute("href") or ""
+    if href and is_safe_url(href):
+        return page.request.get(href)
+    link.click(force=True)
+'''
+    assert unguarded_broad_clicks(arrived) == [
+        ("download_bill",
+         "a:has-text('View Bill PDF'), button:has-text('View Bill PDF'), a, button")]
+
+    # The same function with the guard in the path is left alone.
+    fixed = arrived.replace("link.click(force=True)",
+                            "if is_safe_control(link.inner_text()):\n        link.click()")
+    assert unguarded_broad_clicks(fixed) == []
+
+    # A selector that names its control is not broad.
+    named = '''
+def open_history(page):
+    page.locator("#getmybill").click()
+    page.get_by_role("button", name=re.compile("continue session", re.I)).click()
+    page.locator("button[aria-label*='View']").first.click()
+'''
+    assert unguarded_broad_clicks(named) == []
+
+    # Every button on the page, unnamed, is broad.
+    every = '''
+def press_something(page):
+    page.get_by_role("button").first.click()
+'''
+    assert unguarded_broad_clicks(every) == [
+        ("press_something", "get_by_role('button') with no name")]
+
+
+# -- a real browser saves its own downloads ----------------------------------
+
+REAL_BROWSER_APPS = [d for d in APPS if any(
+    "prefer_real=True" in p.read_text(encoding="utf-8") for p in d.glob("*_docs.py"))]
+
+
+@pytest.mark.parametrize("app", REAL_BROWSER_APPS, ids=lambda d: d.name)
+def test_an_app_that_clicks_in_a_real_browser_watches_a_download_folder(app):
+    """A real Edge or Chrome attached over CDP saves a download itself, into
+    its own Downloads folder, and Playwright's download event never fires.
+    Nine scaffolds waited for that event. AT&T's tester clicked Download
+    PDF five times and the app saw nothing each time. An app that clicks a
+    download control in a real browser has to point the browser at a
+    folder and watch it, or read the PDF some other way."""
+    site = (app / ("%s_site.py" % app.name)).read_text(encoding="utf-8")
+    if "expect_download" not in site:
+        return
+    docs = (app / ("%s_docs.py" % app.name)).read_text(encoding="utf-8")
+    # set_download_dir and fetch_as_b64 both live in paperpull_core.capture
+    # now, so an app satisfies this by calling either, whether it still
+    # names the CDP call itself or reaches it through the core.
+    watches = ("setDownloadBehavior" in site or "setDownloadBehavior" in docs
+               or "set_download_dir" in site or "set_download_dir" in docs)
+    reads_another_way = "fetch_as_b64" in site.lower()
+    assert watches or reads_another_way, \
+        "%s waits for a download event a real browser never sends" % app.name
+
+
+@pytest.mark.parametrize("app", APPS, ids=lambda d: d.name)
+def test_every_app_notices_throttling(app):
+    """Paylocity and UKG, the two payroll apps, watched for a passcode
+    prompt and not for a site that had stopped answering. A payroll system
+    is the worst place to keep asking after it has said no, and the other
+    forty-six already knew to stop."""
+    site = (app / ("%s_site.py" % app.name)).read_text(encoding="utf-8")
+    if "detect_security_challenge" not in site:
+        return
+    assert "RATE_LIMIT_MARKERS" in site, \
+        "%s cannot tell it is being throttled" % app.name

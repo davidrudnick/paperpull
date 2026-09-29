@@ -1,12 +1,13 @@
 """Build a self-contained PaperPull for Windows.
 
-    python build\\build_windows.py            portable folder + zip
-    python build\\build_windows.py --installer  also compile the Inno installer
+    python packaging\\build_windows.py                 portable folder + zip
+    python packaging\\build_windows.py --installer     also compile the Inno installer
+    python packaging\\build_windows.py --arch arm64    a native Windows on ARM build
 
 WHAT IT PRODUCES
 
     dist\\PaperPull\\            a folder that runs with nothing else installed
-    dist\\PaperPull-<ver>.zip   the same, zipped, which is the beta deliverable
+    dist\\PaperPull-<ver>.zip   the same, zipped, for anyone who would rather not run an installer
     dist\\PaperPull-<ver>-setup.exe   only with --installer and Inno Setup present
 
 HOW IT IS BUILT, AND WHY THIS WAY
@@ -15,7 +16,7 @@ Nothing is frozen. The folder carries the official embeddable CPython from
 python.org, with the packages every app needs installed into it once. That was
 chosen over PyInstaller for three reasons.
 
-Every one of the 22 apps needs exactly the same three packages, so one shared
+Every app needs the same few packages, so one shared
 environment serves all of them, and there is nothing to gain from per-app
 bundles.
 
@@ -52,24 +53,62 @@ REPO = Path(__file__).resolve().parents[1]
 DIST = REPO / "dist"
 STAGE = DIST / "PaperPull"
 
+sys.path.insert(0, str(REPO / "packaging"))
+import msix  # noqa: E402
+from icons import ico_largest_png  # noqa: E402
+
 PY_VERSION = "3.12.10"
-PY_ZIP = "python-%s-embed-amd64.zip" % PY_VERSION
-PY_URL = "https://www.python.org/ftp/python/%s/%s" % (PY_VERSION, PY_ZIP)
 GET_PIP = "https://bootstrap.pypa.io/get-pip.py"
+
+# The architecture being built. x64 is the default and the one every release
+# ships. arm64 is a native Windows on ARM build from the same source, which
+# python.org ships as an embeddable zip too, and every package the apps need
+# has a native wheel for it. It is not shipped by default because the x64
+# build already runs on ARM64 Windows under emulation, and nobody would
+# measure the difference in a program that waits on a browser. The switch
+# exists so that changes when a user asks for it, not when someone rebuilds
+# this script. Only run on a machine of the same architecture, since the
+# packages are installed by running the staged Python.
+ARCHES = {"x64": "amd64", "arm64": "arm64"}     # ours -> python.org's name
+ARCH = "x64"
+
+
+def python_zip() -> str:
+    return "python-%s-embed-%s.zip" % (PY_VERSION, ARCHES[ARCH])
+
+
+def python_url() -> str:
+    return "https://www.python.org/ftp/python/%s/%s" % (PY_VERSION, python_zip())
+
+
+def suffix() -> str:
+    """What the arch adds to every output name. Nothing for x64, so the
+    names every release has carried stay the same."""
+    return "" if ARCH == "x64" else "-" + ARCH
 
 # What the panel and every app need. pytest is left out of the package because
 # a user does not run the test suite, and it is the one thing on every app's
 # requirements list that is not needed to run.
-PACKAGES = ["playwright>=1.44", "pypdf>=4.2", "fastapi>=0.110",
+PACKAGES = ["playwright>=1.44", "pypdf>=4.2", "fastapi>=0.110", "openpyxl>=3.1", "pdfplumber>=0.11",
             "uvicorn>=0.27", "anyio>=4"]
 
 # Top-level paths from the repo that belong in the package. apps/ is filtered
 # further below so only code goes, never a venv or data folder that happens to
 # be sitting in a checkout.
-INCLUDE_TOP = ("gui", "core", "apps", "tools", "VERSION", "LICENSE",
+INCLUDE_TOP = ("gui", "core", "apps", "tools", "paperpull.py", "paperpull.bat",
+               "VERSION", "LICENSE", "LICENSE-MIT", "NOTICE.md", "TRADEMARK.md",
+               "PRIVACY.md",
                "README.md", "PROVIDERS.md", "SECURITY.md", "CHANGELOG.md")
 EXCLUDE_PARTS = {".venv", "__pycache__", ".pytest_cache", "tests",
                  "Backups", "Logs", "Diagnostics", "Manual Review"}
+
+
+def host_arch() -> str:
+    """The machine's real architecture, seen through any emulation. An x64
+    Python on an ARM64 machine reports AMD64 in PROCESSOR_ARCHITECTURE and
+    the truth in PROCESSOR_ARCHITEW6432."""
+    raw = (os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE") or "").upper()
+    return "arm64" if raw == "ARM64" else "x64"
 
 
 def say(msg=""):
@@ -107,21 +146,26 @@ def wanted(rel: str) -> bool:
     if parts[0] == "apps":
         # code, rules and launchers only. The example config is the only
         # config that ships, and it is the only one git tracks anyway.
-        name = parts[-1]
-        if name in ("config.json", "progress.json", "discovery.json"):
+        name = parts[-1].lower()
+        if name in ("progress.json", "discovery.json"):
+            return False
+        # Any config but the example. config.json was named here, and a
+        # second person's account is config.<label>.json, which this did
+        # not know about. Nothing of that shape is ever part of the app.
+        if name.startswith("config.") and name.endswith(".json")                 and name != "config.example.json":
             return False
     return True
 
 
 def stage_python() -> Path:
-    say("Python %s, embeddable build" % PY_VERSION)
+    say("Python %s, embeddable build, %s" % (PY_VERSION, ARCH))
     cache = DIST / "cache"
-    fetch(PY_URL, cache / PY_ZIP)
+    fetch(python_url(), cache / python_zip())
     fetch(GET_PIP, cache / "get-pip.py")
 
     pydir = STAGE / "python"
     pydir.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(cache / PY_ZIP) as z:
+    with zipfile.ZipFile(cache / python_zip()) as z:
         z.extractall(pydir)
 
     # The ._pth file IS sys.path for the embeddable build, and two things about
@@ -168,7 +212,18 @@ def stage_python() -> Path:
         'if sys.argv and sys.argv[0] and os.path.isfile(sys.argv[0]):\n'
         '    _d = os.path.dirname(os.path.abspath(sys.argv[0]))\n'
         '    if _d not in sys.path:\n'
-        '        sys.path.insert(0, _d)\n',
+        '        sys.path.insert(0, _d)\n'
+        '\n'
+        '# Bytecode goes to the user\'s temp folder, never into the package.\n'
+        '# A Store install is read-only, and even here the program folder\n'
+        '# should hold only what the installer put there.\n'
+        'if not os.environ.get("PYTHONPYCACHEPREFIX") and sys.pycache_prefix is None:\n'
+        '    _tmp = os.environ.get("LOCALAPPDATA")\n'
+        '    _tmp = os.path.join(_tmp, "Temp") if _tmp else None\n'
+        '    if _tmp is None:\n'
+        '        import tempfile\n'
+        '        _tmp = tempfile.gettempdir()\n'
+        '    sys.pycache_prefix = os.path.join(_tmp, "PaperPull", "pycache")\n',
         encoding="utf-8")
 
     py = pydir / "python.exe"
@@ -216,7 +271,7 @@ def stage_code() -> int:
         if not src.is_file():
             continue
         # App code ships as a TEMPLATE, not as installs. The panel's default
-        # root is apps/ beside it, and a folder of 22 apps with no config and
+        # root is apps/ beside it, and a folder of apps with no config and
         # no history is exactly what a fresh install must not list. Under
         # templates/ it is out of the way until a "create a new install"
         # feature needs it, and the panel asks where the real ones are.
@@ -236,19 +291,22 @@ def write_launchers() -> None:
     if icon.is_file():
         shutil.copy2(icon, STAGE / "paperpull.ico")
         say("  icon")
-    (STAGE / "PaperPull.bat").write_text(
-        "@echo off\r\n"
-        "setlocal\r\n"
-        "cd /d \"%~dp0\"\r\n"
-        "rem The panel binds 127.0.0.1 only. Nothing is reachable from the network.\r\n"
-        "start \"\" http://127.0.0.1:8765\r\n"
-        "python\\python.exe -m uvicorn app:app --host 127.0.0.1 --port 8765 --app-dir gui\r\n",
-        encoding="utf-8")
+    # PaperPull.exe opens the control panel. The installer's shortcuts start
+    # it, and so does the MSIX, whose manifest cannot name a batch file.
+    #
+    # There used to be a PaperPull.bat for the panel as well. Windows does
+    # not tell PaperPull.bat from paperpull.bat, the terminal command staged
+    # from the repo, so writing the one replaced the other, and from 0.19.0
+    # on no Windows package had a terminal command at all. Nothing written
+    # here may share a name with anything staged, whatever the case.
+    if not msix.compile_launcher(STAGE, icon if icon.is_file() else None, say):
+        raise SystemExit("PaperPull.exe was not built, and it is what opens the panel")
 
     (STAGE / "README-FIRST.txt").write_text(
-        "PaperPull %s, beta\r\n"
+        "PaperPull %s\r\n"
         "\r\n"
-        "Double-click PaperPull.bat. A browser tab opens with the control panel.\r\n"
+        "Double-click PaperPull.exe. A window opens running the control panel and\r\n"
+        "a browser tab opens to it. Close the window to stop it.\r\n"
         "\r\n"
         "The first time, it asks where your downloaders are. If you already have\r\n"
         "them, paste that folder's full path and it uses them exactly as they\r\n"
@@ -261,15 +319,32 @@ def write_launchers() -> None:
         "\r\n"
         "Everything runs on this computer. Nothing is sent anywhere.\r\n"
         "\r\n"
-        "Beta. Keep your existing setup until you are happy with this one.\r\n"
+        "Your existing setup keeps working alongside this one, so there is no\r\n"
+        "need to remove anything until you are happy with it.\r\n"
+        "\r\n"
+        "From a terminal, the same panel's commands are\r\n"
+        "  paperpull.bat <app> <command>\r\n"
+        "run in this folder.\r\n"
         % version(), encoding="utf-8")
+    check_terminal_command()
+
+
+def check_terminal_command() -> None:
+    """The terminal command must reach the package as the repo has it. A
+    launcher written over it under another case of the same name is the
+    one way it has gone missing before."""
+    staged, source = STAGE / "paperpull.bat", REPO / "paperpull.bat"
+    if not staged.is_file() or staged.read_bytes() != source.read_bytes():
+        raise SystemExit("the staged paperpull.bat is not the terminal command from the repo")
+    say("  paperpull.bat is the terminal command")
 
 
 def write_inno_script() -> Path:
     """The installer definition. Compiled only when Inno Setup is present."""
     iss = DIST / "PaperPull.iss"
     iss.write_text(r"""; PaperPull installer. Compile with Inno Setup 6.
-; Beta: not signed. Windows will show a SmartScreen warning on first run.
+; The release workflow signs this installer and PaperPull.exe inside it with
+; Azure Artifact Signing. A local build is unsigned.
 
 #define AppVersion "%(ver)s"
 
@@ -283,11 +358,11 @@ DefaultGroupName=PaperPull
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=.
-OutputBaseFilename=PaperPull-{#AppVersion}-setup
+OutputBaseFilename=PaperPull-{#AppVersion}%(suffix)s-setup
 Compression=lzma2/max
 SolidCompression=yes
-ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed=%(arch_allowed)s
+ArchitecturesInstallIn64BitMode=%(arch_allowed)s
 SetupIconFile=PaperPull\paperpull.ico
 UninstallDisplayIcon={app}\paperpull.ico
 
@@ -295,26 +370,30 @@ UninstallDisplayIcon={app}\paperpull.ico
 Source: "PaperPull\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
-Name: "{group}\PaperPull"; Filename: "{app}\PaperPull.bat"; WorkingDir: "{app}"; IconFilename: "{app}\paperpull.ico"
-Name: "{autodesktop}\PaperPull"; Filename: "{app}\PaperPull.bat"; WorkingDir: "{app}"; IconFilename: "{app}\paperpull.ico"; Tasks: desktopicon
+Name: "{group}\PaperPull"; Filename: "{app}\PaperPull.exe"; WorkingDir: "{app}"; IconFilename: "{app}\paperpull.ico"
+Name: "{autodesktop}\PaperPull"; Filename: "{app}\PaperPull.exe"; WorkingDir: "{app}"; IconFilename: "{app}\paperpull.ico"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Shortcuts:"
 
 [Run]
-Filename: "{app}\PaperPull.bat"; Description: "Open PaperPull now"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\PaperPull.exe"; Description: "Open PaperPull now"; Flags: postinstall nowait skipifsilent
 
 [UninstallDelete]
 ; The program only. The user's downloaders, history and browser profiles are
 ; wherever they chose to keep them and are never touched by an uninstall.
 Type: filesandordirs; Name: "{app}\python"
-""" % {"ver": version()}, encoding="utf-8")
-    say("  wrote %s" % iss.relative_to(REPO))
+""" % {"ver": version(), "suffix": suffix(),
+       # x64compatible lets the x64 installer run on ARM64 Windows too, under
+       # emulation. The native arm64 build is for ARM64 machines only.
+       "arch_allowed": "x64compatible" if ARCH == "x64" else "arm64"},
+        encoding="utf-8")
+    say("  wrote %s" % iss)
     return iss
 
 
 def zip_it() -> Path:
-    out = DIST / ("PaperPull-%s.zip" % version())
+    out = DIST / ("PaperPull-%s%s.zip" % (version(), suffix()))
     say("Zip")
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for p in sorted(STAGE.rglob("*")):
@@ -361,31 +440,65 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--installer", action="store_true",
                     help="also compile the Inno Setup installer")
+    ap.add_argument("--msix", action="store_true",
+                    help="also build the unsigned MSIX for the Microsoft Store")
+    ap.add_argument("--arch", choices=sorted(ARCHES), default="x64",
+                    help="x64 (default) or arm64, built on a machine of that architecture")
+    # Signing sits between the two halves. PaperPull.exe has to be signed
+    # before it is zipped, packed into the MSIX and wrapped by the
+    # installer, so a signed build stages first, signs the stage, then
+    # packages what was signed. With neither flag it does both, as before.
+    ap.add_argument("--stage-only", action="store_true",
+                    help="build and test dist\\PaperPull, then stop before any packaging")
+    ap.add_argument("--package-only", action="store_true",
+                    help="package the dist\\PaperPull already staged, without staging again")
     args = ap.parse_args(argv)
+    if args.stage_only and args.package_only:
+        say("--stage-only and --package-only are the two halves of one build, pick one.")
+        return 2
 
     if sys.platform != "win32":
         say("This builds the Windows package and runs on Windows.")
         return 1
+    global ARCH
+    ARCH = args.arch
+    host = host_arch()
+    if host != ARCH:
+        say("This is a %s machine and cannot build the %s package, because the"
+            " packages are installed by running the staged Python." % (host, ARCH))
+        return 1
 
-    say("PaperPull %s" % version())
-    if STAGE.exists():
-        shutil.rmtree(STAGE)
-    STAGE.mkdir(parents=True)
+    say("PaperPull %s, %s" % (version(), ARCH))
+    if args.package_only:
+        if not (STAGE / "PaperPull.exe").is_file():
+            say("Nothing is staged at %s, run with --stage-only first." % STAGE)
+            return 1
+    else:
+        if STAGE.exists():
+            shutil.rmtree(STAGE)
+        STAGE.mkdir(parents=True)
 
-    py = stage_python()
-    install_packages(py)
-    stage_code()
-    write_launchers()
-    audit()
-    smoke_test(py)
+        py = stage_python()
+        install_packages(py)
+        stage_code()
+        write_launchers()
+        audit()
+        smoke_test(py)
+        if args.stage_only:
+            say()
+            say("Staged at dist\\PaperPull. Sign it, then run again with --package-only.")
+            return 0
     zip_it()
+    if args.msix:
+        icon = REPO / "packaging" / "paperpull.ico"
+        msix.pack(STAGE, DIST, version(), ico_largest_png(icon), say, arch=ARCH)
     iss = write_inno_script()
 
     if args.installer:
         # Any major version, wherever it landed. A hardcoded "Inno Setup 6"
         # missed a fresh install of 7 on the very first try.
         iscc = None
-        for base in (r"C:\Program Files", r"C:\Program Files (x86)",
+        for base in (*msix.program_files(),
                      str(Path(os.environ.get("LOCALAPPDATA", "")) / "Programs")):
             for c in sorted(Path(base).glob("Inno Setup */ISCC.exe"), reverse=True):
                 iscc = str(c)

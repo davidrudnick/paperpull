@@ -5,73 +5,147 @@ and environment support. See [FORK.md](FORK.md) for differences and validation s
 
 
 ![Version](https://img.shields.io/github/v/tag/rheeloaded/paperpull?sort=semver&label=version&color=blue)
-![License: MIT](https://img.shields.io/badge/license-MIT-green)
+![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
+[![Sponsor on GitHub](https://img.shields.io/badge/sponsor-on%20GitHub-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/rheeloaded)
 [![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-support%20this%20project-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/rheeloaded)
+[![Website](https://img.shields.io/badge/website-paperpull.net-4c8dff)](https://paperpull.net)
 
-**Receipt & Statement Downloader** — a family of small, **read-only** tools that log in *alongside you* to your own
-accounts and download your **statements and receipts** as PDFs — so you can
-archive them (e.g. into [paperless-ngx](https://docs.paperless-ngx.com/)) instead
-of clicking through each site by hand.
+**Collect years of statements and receipts. Skip the endless downloading.**
+
+PaperPull retrieves the statement and receipt history your banks, cards,
+stores and utilities already hold, organizes it as PDFs on your own
+computer, and turns your purchases and transactions into spreadsheets. It
+is a family of small, **read-only** tools that sign in *alongside you*: you
+type the password and answer the two-factor prompt in a real browser
+window, and PaperPull reads what you can see. Free and open source, no
+account, no cloud. Made for archiving (into
+[paperless-ngx](https://docs.paperless-ngx.com/) or a folder of your own)
+instead of clicking through each site by hand.
+
+![The PaperPull control panel after a pilot run on a sample archive. Every name and amount is invented.](docs/panel.png)
+
+**Watch it:** a [75-second demo](https://youtu.be/_wZToSSMRPU) on the real panel with made-up accounts. **Website:** [paperpull.net](https://paperpull.net), with the [getting-started guide](https://paperpull.net/guide.html), the [provider directory](https://paperpull.net/providers.html) and the [Paperless-ngx tutorial](https://paperpull.net/paperless.html). **Download:** the [latest release](https://github.com/rheeloaded/paperpull/releases/latest), Windows 10 or 11 and macOS on Apple Silicon, Linux from source.
+
+**It also turns those PDFs into spreadsheets.** Your receipts become one
+long table of every item you have ever bought, across every store and every
+account, with what it cost and when. The transactions inside your bank and
+card statements are read out of the PDFs into a workbook, one row each, and
+every statement is checked against its own printed balances, so a row you
+are looking at is a row that adds up. One button on the control panel, or
+one command. See [Every purchase in one spreadsheet](#every-purchase-in-one-spreadsheet)
+and [The transactions inside your statements](#the-transactions-inside-your-statements).
 
 Runs on **Windows and macOS** (and Linux), with the same commands on each.
 
-Twenty-nine providers are supported today, all built on the same pattern:
+**PaperPull is free, and it costs money to make.** There is a server and
+domains to keep paid, developer accounts for the signed Mac build and the
+Microsoft Store, the tools it is built with, and evenings on every provider
+to build it and to keep it working as sites change. If it saves you time, you can show your
+appreciation and support future development by
+**[sponsoring on GitHub](https://github.com/sponsors/rheeloaded)** or
+**[donating on Ko-fi](https://ko-fi.com/rheeloaded)**, or by buying the
+**Microsoft Store edition** for $9.99, one time, the same program with a
+signed installer and automatic updates. Or download it free from the
+[Releases page](https://github.com/rheeloaded/paperpull/releases). Nothing
+is held back from the free build. See [Support](#support).
+
+Forty-seven providers are supported today, all built on the same pattern.
+Nine more, Wells Fargo, SBA, Verizon Mobile, State Farm,
+Kroger, Meijer, American Family, Stripe and FedEx, are built and waiting for someone with an account to
+test them ([#27](https://github.com/rheeloaded/paperpull/issues/27),
+[#28](https://github.com/rheeloaded/paperpull/issues/28),
+[#31](https://github.com/rheeloaded/paperpull/issues/31),
+[#37](https://github.com/rheeloaded/paperpull/issues/37),
+[#41](https://github.com/rheeloaded/paperpull/issues/41),
+[#42](https://github.com/rheeloaded/paperpull/issues/42),
+[#45](https://github.com/rheeloaded/paperpull/issues/45)):
 
 | App | Provider | Documents | Notes |
 |-----|----------|-----------|-------|
+| [`affirm`](apps/affirm) | Affirm | Loan agreements (Truth in Lending), one per loan | JSON API from inside the page, nothing clicked; no monthly statement exists for a pay-over-time account |
+| [`adp`](apps/adp) | ADP Workforce Now | Pay statements, W-2s | Statement services from inside the page, nothing clicked, real Edge/Chrome. Requested in [#46](https://github.com/rheeloaded/paperpull/issues/46) |
 | [`aafmaa`](apps/aafmaa) | AAFMAA (Armed Forces Mutual) | Annual statements, policy docs | ASP.NET WebForms; one documented disclosure dialog |
 | [`brightstart`](apps/brightstart) | Bright Start 529 | Statements, confirmations, tax forms, plan inserts | Ported; fresh live pilot pending |
-| [`capitalone`](apps/capitalone) | Capital One | Bank and card statements, tax forms, letters | Ported; fresh live pilot pending |
 | [`huntington`](apps/huntington) | Huntington Bank | Statements, escrow analyses, tax forms, correspondence | Ported; fresh live pilot pending |
-| [`schwab`](apps/schwab) | Charles Schwab | Statements, tax forms, letters, trade confirmations | Ported; fresh live pilot pending |
 | [`stp`](apps/stp) | STP / BluePrint | Investment notices, statements, tax and fund documents | Ported; fresh live pilot pending |
-| [`usbank`](apps/usbank) | U.S. Bank | Credit-card statements | Ported; fresh live pilot pending |
 | [`ally`](apps/ally) | Ally Bank | Account statements, tax forms | JSON API; same-dated statements named from the PDF |
-| [`amazon`](apps/amazon) | Amazon | Order invoices (full history) | Per-year order pagination |
+| [`amazon`](apps/amazon) | Amazon (any country's store, `marketplace` setting) | Order invoices (full history) | Per-year order pagination |
+| [`amfam`](apps/amfam) | American Family Insurance | Billing statements, policy documents, declarations, ID cards | **Untested, built without an account. Have one? [Help test it](apps/amfam/README.md#help-test-it-no-programming-needed)** Being tested by [@jpfieber](https://github.com/jpfieber). |
 | [`amex`](apps/amex) | American Express | Statements, Year-End Summary | Click-nav SPA; in-memory session |
-| [`anthem`](apps/anthem) | Anthem BCBS (Elevance, 14 Blue states) | EOBs, plan docs (all years), ID cards, letters | Health insurance (PHI); tRPC API, nothing clicked |
+| [`att`](apps/att) | AT&T (Mobility, Fiber, Internet) | Monthly bills | **Confirmed by [@watling777](https://github.com/watling777)** on two accounts, wireless and internet, with a full run on each ([#26](https://github.com/rheeloaded/paperpull/issues/26)) |
+| [`anthem`](apps/anthem) | Anthem BCBS (Elevance, 14 Blue states) | EOBs, plan docs (all years), ID cards, letters | Health insurance (PHI); tRPC API, nothing clicked. Contributed by [@riordan](https://github.com/riordan) |
+| [`apple`](apps/apple) | Apple (App Store and Apple Store) | App Store receipts for subscriptions, in-app purchases and paid apps, and Apple Store order invoices | **Built and run on the maintainer's own account.** Report a Problem's own purchase search from inside the page for the whole family, paid purchases only, each saved from Apple's own receipt, and the Apple Store's order list and invoices, nothing clicked, real Edge/Chrome |
+| [`applecard`](apps/applecard) | Apple Card and Apple Savings | Apple Card statements, Savings statements, tax forms | **Confirmed by [@watling777](https://github.com/watling777)**, whose Pilot and full run saved every statement and the 1099-INT forms. Requested in [#52](https://github.com/rheeloaded/paperpull/issues/52) |
+| [`bestbuy`](apps/bestbuy) | Best Buy | Online, store-order and in-store receipts, and returns | **Built on the maintainer's own account, 35 purchases back to 2015.** The history through the page's own query a year at a time, each details page saved as the receipt, nothing clicked, real Edge/Chrome, paced for Best Buy's bot protection |
+| [`capitalone`](apps/capitalone) | Capital One | Bank and card statements, tax forms, letters | Ported by [@davidrudnick](https://github.com/davidrudnick); fresh live pilot pending |
 | [`chase`](apps/chase) | Chase (credit cards) | Card statements | Real Edge/Chrome; per-card accordions + year picker |
+| [`citi`](apps/citi) | Citi (credit cards) | Monthly card statements | Statements API from inside the page, nothing clicked; the site lists about two years online |
+| [`costco`](apps/costco) | Costco Wholesale | Receipts, in-warehouse, gas, pharmacy and costco.com orders | **Written from a member's recording and run against their account, 34 purchases back to July 2024** ([#47](https://github.com/rheeloaded/paperpull/issues/47)). One membership so far, so a second Pilot is welcome. Two tabs, quarters walked, the warehouse receipt is a dialog rendered with printToPDF, real Edge/Chrome |
 | [`discovercard`](apps/discovercard) | Discover (credit cards) | Card statements | **Capital One is moving these accounts onto its own site. Once yours has moved this app can no longer read it** ([#13](https://github.com/rheeloaded/paperpull/issues/13)) |
 | [`dominion`](apps/dominion) | Dominion Energy (VA) | Billing statements | Paginated MUI accordion; ~18-month limit |
+| [`ebay`](apps/ebay) | eBay | Order receipts, ten years of purchase history | **Confirmed by [@jpfieber](https://github.com/jpfieber), every order back to 2017.** Order-details page rendered to PDF, nothing clicked, real Edge/Chrome. Requested in [#44](https://github.com/rheeloaded/paperpull/issues/44) |
+| [`lowes`](apps/lowes) | Lowe's Home Improvement | Store and online receipts, and returns | **Built on the maintainer's own account.** The purchase history read by address, each purchase's details page saved as the receipt, nothing clicked, real Edge/Chrome |
+| [`homedepot`](apps/homedepot) | The Home Depot | Order receipts, with model and store SKU numbers | **Built on the maintainer's own account.** The history through the page's own request, Home Depot's own print receipt taken without opening the print dialog, nothing clicked, real Edge/Chrome. Home Depot keeps two years online |
+| [`etrade`](apps/etrade) | E*TRADE | Statements, trade confirmations, tax forms | **Confirmed by [@watling777](https://github.com/watling777)**, whose Pilot and full run saved every statement ([#36](https://github.com/rheeloaded/paperpull/issues/36)). No tax form seen yet |
+| [`ezpassva`](apps/ezpassva) | E-ZPass Virginia | Monthly and quarterly toll statements | **Built on the maintainer's own account.** The portal's own statements list read from inside the page, nothing clicked; about a year is online, so run it at least once a year |
+| [`fairfaxwater`](apps/fairfaxwater) | Fairfax Water (VA) | Water bills | Mendix portal, driven like a person; PDFs for the last year only, so run it quarterly |
+| [`fedex`](apps/fedex) | FedEx Billing Online | Shipping invoices | **Untested, built from a login not connected to Billing Online. Use it? [Help test it](apps/fedex/README.md#help-test-it-no-programming-needed)** Requested in [#54](https://github.com/rheeloaded/paperpull/issues/54) |
+| [`fidelity`](apps/fidelity) | Fidelity Investments | Statements, trade confirmations, tax forms | Document Access Hub API from inside the page, nothing clicked; real Edge/Chrome |
 | [`gap`](apps/gap) | Gap Inc. (Gap, Old Navy, Banana Republic, Athleta) | Order receipts | Lazy-loading history; ~13-month limit |
+| [`kroger`](apps/kroger) | Kroger (Pick 'n Save, Metro Market, Fred Meyer, Ralphs and the rest) | Receipts, in-store, fuel, pickup and delivery | **Built against an account with no purchases yet. Have one? [Help test it](apps/kroger/README.md#help-test-it-no-programming-needed)** Being tested by [@jpfieber](https://github.com/jpfieber). Purchase-history API and receipt page, nothing clicked, real Edge/Chrome |
+| [`github`](apps/github) | GitHub | Payment receipts (Pro, Copilot, Actions, Sponsors and the rest) | **Confirmed by [@jpfieber](https://github.com/jpfieber) on [#43](https://github.com/rheeloaded/paperpull/issues/43).** Receipt links fetched or printed, nothing clicked |
+| [`golden1`](apps/golden1) | Golden 1 Credit Union | Statements, tax forms | **Partly tested.** A Pilot on [@watling777](https://github.com/watling777)'s account saved five checking statements, and a repair for the older ones and the credit card is being tested ([#35](https://github.com/rheeloaded/paperpull/issues/35)) |
+| [`meijer`](apps/meijer) | Meijer | Order receipts, in-store digital receipts where mPerks lists them | **Untested, built without an account. Have one? [Help test it](apps/meijer/README.md#help-test-it-no-programming-needed)** Being tested by [@jpfieber](https://github.com/jpfieber). Nothing clicked |
+| [`myecp`](apps/myecp) | MILITARY STAR (Exchange Credit Program) | Card statements | **Built on the maintainer's own account, 25 statements back to 2023.** The MyECP statements list and download from inside the page, nothing clicked |
 | [`mypay`](apps/mypay) | DFAS myPay | eRAS, CRSC, 1099-R, 1095 | Government pay system; JSON API, nothing clicked |
 | [`mtb`](apps/mtb) | M&T Bank | Mortgage statements, escrow, 1098 | Own online banking; you list, app expands all years |
+| [`netbenefits`](apps/netbenefits) | Fidelity NetBenefits (workplace 401(k)) | Quarterly or monthly statements, made to order | The site generates statements on request; the app requests each period and renders it, nothing clicked |
 | [`navyfederal`](apps/navyfederal) | Navy Federal CU | Account statements | Per-account accordions; blob-tab PDFs |
+| [`newrez`](apps/newrez) | Newrez | Mortgage statements, escrow analysis, 1098 | **Partly tested.** On [@watling777](https://github.com/watling777)'s account this year's statements and the 1098s download, and a repair for earlier years is being tested ([#38](https://github.com/rheeloaded/paperpull/issues/38)) |
+| [`paypal`](apps/paypal) | PayPal | Monthly statements | **Built on the maintainer's own account, 25 statements.** The site's own statements list and download from inside the page, nothing clicked; three years are online |
 | [`paylocity`](apps/paylocity) | Paylocity | **Pay statements** | Escher JSON API, enqueue-poll-fetch PDF; nothing clicked |
-| [`pge`](apps/pge) | PG&E (Pacific Gas and Electric) | Billing statements | Salesforce portal with a paginated history, fresh live pilot pending |
+| [`pge`](apps/pge) | PG&E (Pacific Gas and Electric) | Billing statements | Salesforce portal with a paginated history. Contributed by [@appchamp](https://github.com/appchamp). Repaired in 0.37.1 and confirmed on a real account by [@watling777](https://github.com/watling777) ([#33](https://github.com/rheeloaded/paperpull/issues/33)) |
 | [`redcard`](apps/redcard) | Target RedCard / Circle Card (TD Bank) | Billing statements | Statements table; per-year switcher |
 | [`robinhood`](apps/robinhood) | Robinhood | Account statements, tax docs | "View More" pagination |
-| [`schwab`](apps/schwab) | Charles Schwab | Statements, tax forms, letters, trade confirmations | Ported; fresh live pilot pending |
+| [`sba`](apps/sba) | SBA (MySBA Loan Portal) | Loan statements, 1098 | **Untested, built without an account. Have an SBA loan? [Help test it](apps/sba/README.md#help-test-it-no-programming-needed)** |
+| [`schwab`](apps/schwab) | Charles Schwab | Statements, tax forms, letters, trade confirmations | Ported by [@davidrudnick](https://github.com/davidrudnick); fresh live pilot pending |
+| [`smud`](apps/smud) | SMUD (Sacramento Municipal Utility District) | Monthly bills | **Untested, built without an account. Have one? [Help test it](apps/smud/README.md#help-test-it-no-programming-needed)** Being tested by [@watling777](https://github.com/watling777). |
+| [`stripe`](apps/stripe) | Stripe (merchant Dashboard) | Fee invoices, tax forms such as the 1099-K | **Untested, built on an account with no documents yet. Have Stripe invoices or tax forms? [Help test it](apps/stripe/README.md#help-test-it-no-programming-needed)** Requested in [#53](https://github.com/rheeloaded/paperpull/issues/53) |
+| [`statefarm`](apps/statefarm) | State Farm | Bills, renewal notices, ID cards, receipts, policy documents | **Untested, built without an account. Have a policy? [Help test it](apps/statefarm/README.md#help-test-it-no-programming-needed)** Being tested by [@watling777](https://github.com/watling777). |
 | [`target`](apps/target) | Target | Receipts (Online + In-Store) | Print-capture |
 | [`tmobile`](apps/tmobile) | T-Mobile | Bill statements | Bill-history page; detailed-bill download |
+| [`tsp`](apps/tsp) | Thrift Savings Plan | Participant statements, 1099-R | Secure Mailbox API from inside the page, nothing clicked; downloading marks the message read |
 | [`ukg`](apps/ukg) | UKG Pro / UltiPro | **Pay statements** | Per-employer tenant; JSON-API, nothing clicked |
+| [`ups`](apps/ups) | UPS Billing Center | Shipping invoices | **Built on the maintainer's own account.** The Billing Center's own invoice list and download from inside the page, nothing clicked |
 | [`usaa`](apps/usaa) | USAA | Statements | JSON-API enumeration |
-| [`usbank`](apps/usbank) | U.S. Bank | Credit-card statements | Ported; fresh live pilot pending |
+| [`usbank`](apps/usbank) | U.S. Bank | Credit-card statements | Ported by [@davidrudnick](https://github.com/davidrudnick); fresh live pilot pending |
 | [`verizon`](apps/verizon) | Verizon (Fios) | Bill statements | Real Edge (bot block); dropdown + CDP download |
+| [`verizonmobile`](apps/verizonmobile) | Verizon Mobile (wireless) | Monthly bills | **Untested, built without an account. Have one? [Help test it](apps/verizonmobile/README.md#help-test-it-no-programming-needed)** |
 | [`walmart`](apps/walmart) | Walmart | Receipts | Hardened against bot detection |
+| [`wellsfargo`](apps/wellsfargo) | Wells Fargo | Account statements, tax documents | **Untested, built without an account. Have one? [Help test it](apps/wellsfargo/README.md#help-test-it-no-programming-needed)** |
 | [`wealthfront`](apps/wealthfront) | Wealthfront | Statements, tax docs | |
 
 > ⚠️ **Read this first:** these tools drive real, signed-in financial accounts.
 > See [SECURITY.md](SECURITY.md) before you run *or* publish anything. In short:
 > never commit your `*-browser-profile/` folder, your `config.json`, or any
-> downloaded PDF. The `.gitignore` blocks them — don't override it.
+> downloaded PDF. The `.gitignore` blocks them, don't override it.
 
 ## How it works (the shared design)
 
 ### The one decision everything follows from
 
 Your documents live on the provider's site, and it will only hand them to a
-browser that is already signed in. So PaperPull never tries to *be* you — it
+browser that is already signed in. So PaperPull never tries to *be* you, it
 works *beside* you. You sign in yourself, in a real browser window, and the
 tool attaches to that window afterwards and reads.
 
 ```mermaid
 flowchart TB
     you(["You"]) -->|"sign in · 2FA · device approval"| br["A real browser window<br/>its own profile · its own debugging port"]
-    br -.->|"attaches over CDP — reads, never authenticates"| app
+    br -.->|"attaches over CDP, reads, never authenticates"| app
     subgraph app ["One app = one provider"]
-        orch["Orchestrator<br/>discover → download → verify<br/>the same in all seventeen apps"]
+        orch["Orchestrator<br/>discover → download → verify<br/>the same in every app"]
         site["provider_site.py<br/>selectors · URLs · download quirks"]
         core["paperpull-core<br/>naming · filing · state · CSV · PDF checks"]
         orch --> site
@@ -84,16 +158,23 @@ That single choice is why there is no password anywhere in this project, why
 2FA and device approvals are never an obstacle, and why a provider tightening
 its login breaks nothing here.
 
-In practice that first step is `login.bat` (or `./login.command`), which opens
-the browser for you — a plain Chromium for most apps, or your own installed
-Edge/Chrome for the few sites whose bot detection turns a fresh Chromium away
-(Walmart, Verizon). Each app gets its own profile and its own debugging port,
-so several signed-in browsers can sit open at once without colliding.
+In practice that first step is `paperpull <app> login` (or the app's own
+`login.bat` / `login.command`), which opens the browser for you, a plain
+Chromium for most apps, or your own installed Edge/Chrome for the few sites
+whose bot detection turns a fresh Chromium away (Walmart, Verizon, Chase).
+Each app gets its own profile and its own debugging port, so several
+signed-in browsers can sit open at once without colliding. Those profiles
+are separate from your everyday browser on purpose, so each starts with no
+extensions and no saved logins. They are real browser profiles, though, so
+a password manager installed into one, from the extension store in the
+window Login opens, stays there for every Login of that provider after.
+It is one profile per provider, so the extension goes in once for each
+provider you set up, not once for all of them.
 
 **Everything a provider knows lives in one file.** `provider_site.py` holds
 every selector, URL and download quirk for that site. The orchestrator around
-it is the same in all seventeen apps, and `paperpull-core` underneath it is
-shared. When a provider redesigns, the repair is one file — never a rewrite,
+it is the same in every app, and `paperpull-core` underneath it is
+shared. When a provider redesigns, the repair is one file, never a rewrite,
 and never a change to how documents get named, filed or tracked.
 
 ### What one run actually does
@@ -106,7 +187,7 @@ flowchart TB
     DL --> V{"Is it a real PDF?"}
     V -->|no| MR["Manual Review<br/>flagged, never silently lost"]
     V -->|yes| F["Classify, name, file<br/>+ append to the index CSV"]
-    F --> OK["Mark downloaded_ok<br/>sticky — survives deletion"]
+    F --> OK["Mark downloaded_ok<br/>sticky, survives deletion"]
 ```
 
 Three plain-text files carry the state, and you can read all of them:
@@ -114,11 +195,11 @@ Three plain-text files carry the state, and you can read all of them:
 | File | Holds |
 |------|-------|
 | `discovery.json` | what the provider showed us this run |
-| `progress.json` | what happened to each document — including the sticky `downloaded_ok` |
-| `<Provider> Index.csv` | one row per saved document, for humans and spreadsheets |
+| `progress.json` | what happened to each document, including the sticky `downloaded_ok` |
+| `<Provider> Document Index.csv` | one row per saved document, for humans and spreadsheets (receipt apps also keep an `Order History.csv`, one row per line item) |
 
 That last step is what makes a re-run safe. `downloaded_ok` is keyed to the
-document, not to the file on disk — so you can import everything into
+document, not to the file on disk, so you can import everything into
 paperless-ngx, delete the PDFs, and the next run still skips them. It only
 fetches what is genuinely new, and lists it in `new-this-run.txt`.
 
@@ -126,20 +207,34 @@ fetches what is genuinely new, and lists it in `new-this-run.txt`.
 
 Nothing that buys, sells, transfers, pays, deletes, or changes a setting is
 ever clicked, and all site interaction lives in `provider_site.py` where it can
-be read in one sitting. The statement apps enforce this deny-by-default — a
+be read in one sitting. Every app that clicks enforces this deny-by-default, a
 control must clear a blocklist (`FORBIDDEN_CONTROL_RE`) *and* match a document
-allowlist (`SAFE_DOC_CONTROL_RE`). The receipt apps screen a narrow
-print/invoice pattern against the blocklist. Gap and UKG click nothing at all.
+allowlist (`SAFE_DOC_CONTROL_RE`), and the app's host allowlist refuses any
+stored URL that points elsewhere. Sixteen apps click nothing at all (ADP, Affirm, Amazon,
+Anthem, Citi, eBay, Fidelity, Gap, GitHub, Kroger, Meijer, myPay, NetBenefits, Paylocity, TSP, UKG), they read a JSON API or render a
+page they navigated to. A repo-wide test checks every app's guard.
 [SECURITY.md](SECURITY.md) spells out which app does which.
 
 ### One app, more than one person
 
-A `--config config.<name>.json` flag lets one app serve a second person's
-account with its own profile, port and output folders, so no data mixes. The
-launchers take the account label as an argument (`login.bat spouse` /
-`./login.command spouse`).
+In the control panel, **add a person** beside the Account box makes the
+second person's account, and the Account box then runs every action against
+it. From a terminal it is `paperpull <app> add-account spouse`, then
+`paperpull <app> all --account spouse`. Either way it gets its own profile,
+port and output folder beside the first one's, so no data mixes. Underneath it is a
+`config.spouse.json` beside the app's `config.json`, which the app also takes
+directly as `--config`, and the sign-in launcher takes the label too
+(`login.bat spouse` / `./login.command spouse`). `python tools/add_account.py
+spouse` does every app at once.
 
 ## Quick start
+
+**Want to see it first?** The panel's welcome screen offers **See a sample
+archive**, a folder of invented statements and receipts. The Status tab
+fills in and both spreadsheets build from it, so you can see exactly what
+PaperPull produces before you sign in to anything. Nothing downloads while
+you are in it, and *Leave the sample* puts you back. Every document in it
+says on its face that it is invented.
 
 ![Quick start](docs/quickstart.gif)
 
@@ -153,7 +248,7 @@ setup-all.bat        REM Windows
 ./setup-all.command  # macOS / Linux
 ```
 
-Then either drive everything from the **[GUI control panel](gui)** — pick an
+Then either drive everything from the **[GUI control panel](gui)**, pick an
 app and account, click an action, and watch the live output:
 
 ```bat
@@ -162,18 +257,34 @@ gui\run_gui.bat
 
 ![PaperPull control panel](docs/control-panel.gif)
 
-…or run a single app directly (using `amex` as the example):
+…or run a single app from the terminal, with one command for all of them
+(using `amex` as the example):
 
 ```bat
-cd apps\amex
-copy config.example.json config.json    REM then edit paths as needed
-login.bat                 REM opens Chromium — sign in yourself, leave it OPEN
-run_pilot.bat             REM download the newest few as a test
-run_all.bat               REM download everything available
+copy apps\amex\config.example.json apps\amex\config.json    REM then edit paths as needed
+paperpull amex login            REM opens a browser, sign in yourself, leave it OPEN
+paperpull amex pilot            REM download the newest few as a test
+paperpull amex all              REM download everything available
+paperpull amex resume           REM continue after an interruption
+paperpull list                  REM every app it can see
 ```
 
+`paperpull` is `paperpull.bat` on Windows and `./paperpull` on macOS and
+Linux, or `python paperpull.py` anywhere. In the installed Mac app it is
+`/Applications/PaperPull.app/Contents/Resources/paperpull`, and in the
+installed Windows app it is `paperpull.bat` in the folder PaperPull was
+installed to, `%LOCALAPPDATA%\PaperPull` unless you chose another. Both work
+on the same installs the panel does. It finds the app by folder name,
+slug or provider, runs it under its own environment, and passes anything else
+straight through, so `paperpull chase all --year 2025 --account spouse` works.
+The commands are `setup`, `login`, `discover`, `pilot`, `all`, `resume`,
+`verify`, `diagnose` and `dry-run`. The panel offers the six of those a
+person uses day to day, plus a Scope row (one year, or a date range) that
+becomes the same `--year`, `--start-date` and `--end-date` every app takes.
+
 Each app also has its own README with provider-specific details and quirks.
-(Prefer to set apps up one at a time? Each has its own `setup.bat` / `setup.command`.)
+(Prefer to set apps up one at a time? `paperpull <app> setup`, or the app's
+own `setup.bat` / `setup.command`.)
 
 ## Knowing when to run it again
 
@@ -244,42 +355,132 @@ prints only what needs attention. The dashboard reads no document contents and
 carries no amounts or account numbers, but it does list which providers you
 hold accounts with, so it belongs with your installs and is gitignored here.
 
+## Every purchase in one spreadsheet
+
+The receipt apps (Amazon, Target, Walmart, Gap) record every line item they
+see while downloading, in an `<Provider> Order History.csv` beside the PDFs.
+`tools/export_purchases.py` gathers all of them into one workbook, one row
+per item across every provider and account, newest first, with an Orders
+sheet and a Summary of spend per provider per year. Amounts are numbers, so
+Excel can sum them. Nothing reads a PDF and it takes about a second.
+
+```
+python tools/export_purchases.py --root "C:\path\to\your\installs"
+```
+
+The panel has the same thing on its **Spreadsheet** tab, one button, with a
+dropdown for one provider at a time (`Amazon Purchases.xlsx`). The file is
+rebuilt from scratch each time, so edit a copy, not the original.
+
+## The transactions inside your statements
+
+A statement archive holds PDFs, and the transactions are inside them.
+`tools/export_transactions.py` opens each PDF a statement archive's index
+knows about, reads it line by line, and keeps the lines that have the shape
+of a transaction, a date, a description and an amount. Nothing in it is
+written for one bank. What makes it trustworthy is the statement itself.
+Every statement prints a beginning and an ending balance, and the
+transactions between them have to add up.
+
+```
+python tools/export_transactions.py --root "C:\path\to\your\installs"
+```
+
+Where the statement carries a running balance column, the sign of every
+amount is read off the balance and the statement reconciles to the cent by
+construction. Where it prints signed amounts, they are summed as printed and
+checked against every balance pair the statement shows, which is how a card
+statement that prints its summary three times is read right. A statement
+covering two accounts is reconciled one account at a time. A statement that
+does not add up is still exported, with the difference in the Statements
+sheet, so you know which rows to doubt. On the author's archive, every USAA
+and Navy Federal statement and 120 of 128 American Express statements
+reconcile. Brokerage statements never will, since their balances include
+market movement, and the sheet says so.
+
+Amounts are the effect on the balance. Money in is positive, money out is
+negative, for a bank account and a card alike. Each PDF is read once and
+remembered in a cache beside the installs, so the first build of a big
+archive takes minutes and the next takes seconds. The panel's Spreadsheet
+tab has this too, under Statements, streaming its progress.
+
+## Naming your files your way
+
+Files are named `2026-03-09 Target Coffee Receipt.pdf` unless you say
+otherwise. The panel's **File names** tab builds your own pattern from
+parts, the date in the shape you like, the provider, the order or
+document number, the account, the total and more, each shown with how
+many of your own files carry it. A part can be skipped when a document
+does not have it, so no name ends in a stray dash, and the three newest
+files you already have are shown under the new pattern as you type.
+
+One pattern covers every receipts app or every statements app, or any
+single app can have its own. After you save, the tab offers to rename
+the files you already have to match, a preview first and then the
+rename, and nothing is downloaded again. The pattern language is in
+[docs/file-naming.md](docs/file-naming.md).
+
 ## Windows and macOS
 
-**Windows has an installer.** Every release on the
+**Both have a package.** Every release on the
 [Releases page](https://github.com/rheeloaded/paperpull/releases) carries
-`PaperPull-<version>-setup.exe`, which installs the control panel, the shared
-core and every provider into your own user folder with no admin rights and no
-Python on the machine, and `PaperPull-<version>.zip`, the same folder for
-anyone who would rather not run an installer. The current release is a beta
-and the installer is not yet code-signed, so Windows shows its SmartScreen
-prompt the first time. See [Code signing policy](#code-signing-policy) below.
+`PaperPull-<version>-setup.exe` for Windows, which installs the control
+panel, the shared core and every provider into your own user folder with no
+admin rights and no Python on the machine, and `PaperPull-<version>.zip`, the
+same folder for anyone who would rather not run an installer. The package
+is x64 and runs on Windows on ARM (a Snapdragon laptop, say) under the
+emulation Windows 11 provides, where the browser it drives is your own
+native Edge or Chrome and the Python side spends its life waiting on it. A
+native ARM64 build is one flag away in `packaging/build_windows.py` and
+will be shipped when someone needs it.
 
-For a checkout of this repository, one download covers both. Every app ships two launchers with the same names
-and the same behaviour — `.bat` for Windows, `.command` for macOS and Linux —
-so the instructions in this README and in each app's own README apply
-wherever you are:
+**Two Windows editions, one program.** The GitHub release is free. The
+Microsoft Store edition is the same package from the same build, for
+$9.99 one time, and what the price buys is convenience, a Store-signed
+package that installs with no warning, updates through the Store, and
+uninstalls cleanly, plus the knowledge that it keeps the project going.
+Nothing is held back from either edition. The AGPL permits selling copies and the source stays public. For macOS
+there is `PaperPull-<version>-arm64.dmg`, Apple Silicon only, signed and
+notarized, so it opens with no warning. Drag PaperPull to Applications and
+double-click it. The Windows installer and the program inside it are
+code-signed with Azure Artifact Signing. SmartScreen can still show its
+prompt while the certificate is new, since it learns to trust a publisher
+from downloads over time. See [Code signing policy](#code-signing-policy)
+below.
+
+For a checkout of this repository, one download covers both. The
+double-click files each app keeps, and the one-shot setup, come in both
+flavors, and everything else is the same `paperpull` command on either:
 
 | Task | Windows | macOS / Linux |
 |------|---------|---------------|
 | One-shot setup | `setup-all.bat` | `./setup-all.command` |
 | Set up one app | `setup.bat` | `./setup.command` |
 | Sign in | `login.bat` | `./login.command` |
-| Test run | `run_pilot.bat` | `./run_pilot.command` |
-| Full run | `run_all.bat` | `./run_all.command` |
+| Fix unsure receipt names | `review_names.bat` | `./review_names.command` |
+| Test run | `paperpull amex pilot` | `./paperpull amex pilot` |
+| Full run | `paperpull amex all` | `./paperpull amex all` |
 | Control panel | `gui\run_gui.bat` | `gui/run_gui.command` |
 
-A second account is the same on both: `run_all.bat spouse` /
-`./run_all.command spouse`.
+A second account is the same on both: `paperpull amex all --account spouse`.
+
+`review_names` is in each receipt app, the ones that name a purchase from its
+items, because it asks you for one name at a time and so cannot run in the
+panel. It is also the one double-click file in a folder the installed app
+made, since the panel does the rest there, and in such a folder it runs on
+the app's own Python.
 
 Only one thing genuinely differs. macOS keeps Playwright's browser inside an
 app bundle and in a different cache directory, and a couple of providers need
-a branded Edge/Chrome to get past their bot protection — that lookup lives in
+a branded Edge/Chrome to get past their bot protection, that lookup lives in
 `paperpull_core.browser` and is handled for you.
 
-### Getting it onto a Mac
+### Getting a checkout onto a Mac
 
-**`git clone` is the smoothest route** — it preserves the scripts' executable
+To use PaperPull, the `.dmg` above is the way. This is for a checkout of the
+repository.
+
+**`git clone` is the smoothest route**, it preserves the scripts' executable
 bit and macOS does not quarantine it.
 
 If you download a release archive instead, prefer the **`.tar.gz`**: it keeps
@@ -296,40 +497,55 @@ chmod +x setup-all.command apps/*/*.command gui/*.command
 ## Requirements
 
 - **Windows, macOS, or Linux**
-- Python 3.11+
-- Playwright (installed per app by the setup script)
+- For the Windows installer or the macOS `.dmg`, nothing else. They carry
+  their own Python.
+- For a checkout, Python 3.11+ and Playwright (installed per app by the
+  setup script)
+- A Chromium-family browser for the few providers that need a real one
+  (Chrome, Edge, Brave, Vivaldi or Opera). Safari and Firefox cannot be
+  driven this way.
 
-## Contributing — add your provider
+## Contributing a provider
 
 No one has accounts everywhere, so **PaperPull grows when people add the
 providers they use.** If a bank, card, brokerage, utility, telecom, or retailer
 you use isn't here yet, you're the ideal person to add it:
 
-- 📖 **[Adding a provider](docs/adding-a-provider.md)** — a step-by-step guide
+- 📖 **[Adding a provider](docs/adding-a-provider.md)**, a step-by-step guide
   (clone the closest app, rewrite one file, stay read-only, test, submit).
-- 📋 **[PROVIDERS.md](PROVIDERS.md)** — what's supported and what's requested;
+- 📋 **[PROVIDERS.md](PROVIDERS.md)**, what's supported and what's requested;
   claim one so nobody builds it twice.
 - 📥 Can't build it yourself? [Request a provider](https://github.com/rheeloaded/paperpull/issues/new/choose)
   and someone with that account may pick it up.
+- 🎬 **[Testing a provider](docs/testing-a-provider.md)**, for people who have
+  the account but do not write code. Sign in, press **Record**, click your way
+  to one document, and send back what the app wrote down. That is usually all
+  it takes to turn a scaffold into a working app.
 
-Every contribution keeps the **read-only, local, no-credentials** design — see
+Every contribution keeps the **read-only, local, no-credentials** design, see
 [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 ## Status & roadmap
 
-- ✅ All **twenty-six** apps pass their tests. Twenty-two are in regular use by
-  the author, and the four contributed most recently are marked in the table
-  above as awaiting a fresh live pilot.
-- 🔜 **More providers:** community-driven — see [PROVIDERS.md](PROVIDERS.md).
+- ✅ All **fifty-nine** apps pass their tests, the forty-seven that are
+  supported, the three with a known issue and the nine still waiting for a
+  tester, 9,876 of them across the repo. Most are in regular use by the author. The rest were built or
+  confirmed by people who hold those accounts, named in the table above
+  and in [Thanks](#thanks).
+- ✅ **Packaged.** A Windows installer and a signed, notarized macOS app,
+  both built by GitHub Actions from the tagged commit, with checksums. A
+  Microsoft Store listing and free open-source code signing for Windows are
+  in progress.
+- 🔜 **More providers:** community-driven, see [PROVIDERS.md](PROVIDERS.md).
 - 🔜 **Scheduled/assisted runs:** a monthly "nudge + sweep" (e.g. the 1st) that
   opens the login browsers and then runs discover + resume across every app once
-  you've signed in — delete-safe, so it only grabs what's new. Fully unattended
+  you've signed in, delete-safe, so it only grabs what's new. Fully unattended
   runs stay out of scope by design: the tools never store credentials or bypass
   2FA, so a human sign-in stays in the loop (long-session retailer apps may
   tolerate more automation than banks/cards).
 - ✅ **Shared core:** the support code the apps used to duplicate now lives once
-  in [`core/`](core) as `paperpull-core`. An app declares an `AppSpec` — its
-  folders, routing, CSV columns and config defaults — and keeps only its
+  in [`core/`](core) as `paperpull-core`. An app declares an `AppSpec`, its
+  folders, routing, CSV columns and config defaults, and keeps only its
   orchestrator and its `*_site.py`. `tools/check_installs.py` reports whether
   your installs have drifted from the repo.
 
@@ -344,16 +560,63 @@ signed binary can only ever come from code that is in this repository.
 This program does not transfer any information to other networked systems
 unless specifically requested by the user. The only sites it contacts are the
 providers you sign in to yourself, and the only download it ever offers is a
-browser, at sign-in, with your agreement.
+browser, at sign-in, with your agreement. The full statement is
+[PRIVACY.md](PRIVACY.md).
 
 Team roles, current status and the full policy are in
 [docs/code-signing.md](docs/code-signing.md).
 
 ## Support
 
-If PaperPull saves you time, you can support its development on Ko-fi:
-**[ko-fi.com/rheeloaded](https://ko-fi.com/rheeloaded)** ☕. Entirely optional and
-much appreciated — it doesn't change anything below.
+PaperPull is free and open source, and it costs real money and real time
+to develop. There is a server and domain names to keep paid, developer
+accounts for the signed and notarized Mac build and for the Microsoft Store
+listing, and the tools it is built with. Every one of the forty-odd
+providers took evenings to build, and each one needs repairing when its
+site changes, which they do.
+
+If PaperPull saves you time, there are three ways to show your appreciation
+and support future development. All are optional, and none changes what
+the free build does.
+
+- **Sponsor on GitHub:** **[github.com/sponsors/rheeloaded](https://github.com/sponsors/rheeloaded)**, one-time or monthly, from a card you already have on GitHub.
+- **Donate on Ko-fi:** **[ko-fi.com/rheeloaded](https://ko-fi.com/rheeloaded)** ☕
+- **Buy the Microsoft Store edition** for $9.99, one time, the same
+  program from the same build, with a signed installer that opens with no
+  warning and updates through the Store. The listing is in review and will
+  be linked here once it is live. It unlocks nothing the free build lacks.
+
+You can also help without spending anything: test a provider you hold an
+account with (see [PROVIDERS.md](PROVIDERS.md)), report what breaks, or
+contribute one. That is worth as much as a donation.
+
+## Thanks
+
+PaperPull only reaches the providers people bring to it. These people
+built one, tested one against an account the author does not hold, or
+found a bug and diagnosed it to the line.
+
+- [@davidrudnick](https://github.com/davidrudnick), the Capital One, U.S.
+  Bank and Charles Schwab apps, and a long run of panel fixes.
+- [@riordan](https://github.com/riordan), the Anthem BCBS app, the first
+  health insurer.
+- [@appchamp](https://github.com/appchamp), the PG&E app.
+- [@marecabo](https://github.com/marecabo), Amazon's legal invoice PDFs on
+  the German store.
+- [@watling777](https://github.com/watling777), the tester behind AT&T,
+  SMUD, Golden 1, E*TRADE, State Farm and Newrez, seven providers' worth of
+  surveys and pilots in a weekend, and the PG&E pagination bug.
+- [@dertbv](https://github.com/dertbv), three exporter and Navy Federal
+  bugs, each diagnosed so exactly there was nothing to add.
+- [@liamrotheram](https://github.com/liamrotheram) and
+  [@OberstK](https://github.com/OberstK), Amazon outside the United States.
+- [@jpfieber](https://github.com/jpfieber), who asked for eBay and became
+  PaperPull's first sponsor before it was even built, then tested eBay and
+  GitHub to working, eBay through every order back to 2017, and is testing
+  Kroger, Meijer, American Family and Target.
+
+If you tested a provider and are not here, say so on the issue and you
+will be.
 
 ## Legal
 
@@ -361,5 +624,16 @@ This project is for **personal archival of your own records**. It is not
 affiliated with, endorsed by, or sponsored by any of the companies listed.
 All product names and trademarks are the property of their respective owners.
 Automating access to a website may be restricted by that site's Terms of
-Service — you are responsible for how you use these tools. Provided **as-is,
-without warranty of any kind** (see [LICENSE](LICENSE)).
+Service, you are responsible for how you use these tools. Provided **as-is,
+without warranty of any kind**.
+
+**License.** PaperPull is free software under the
+[GNU Affero General Public License, version 3](LICENSE). You can run it,
+read it, change it and share it. If you distribute a changed version, or run
+one as a service for other people, the same license applies to what you
+distribute, source included. Contributions before 2026-09-18 were made under
+MIT and that permission is kept, see [NOTICE.md](NOTICE.md).
+
+**Name.** The PaperPull name is not part of the license. A modified version
+needs its own name, so that anything called PaperPull is this project. What
+that allows and what it doesn't is in [TRADEMARK.md](TRADEMARK.md).

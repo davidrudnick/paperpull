@@ -2,7 +2,7 @@
 
 Every app used to carry its own ~430-line copy of `storage.py` and friends.
 Comparing those copies showed they were 94-100% identical once the provider's
-name was normalised away; the real differences were always the same handful of
+name was normalized away; the real differences were always the same handful of
 *facts*, not logic:
 
   * the provider's display name,
@@ -35,7 +35,7 @@ class Folder:
     """One output folder.
 
     `precreate=False` means the folder is reachable through routing but is not
-    created up front — it appears the moment a document actually lands there.
+    created up front, it appears the moment a document actually lands there.
     That is what keeps an install from growing folders it can never fill (an
     `Insurance Documents` folder under a phone carrier, say).
     """

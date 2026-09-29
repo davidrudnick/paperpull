@@ -3,14 +3,24 @@
   "owner_in_filename": false,
   "output_dir": ".",
   "profile_dir": "./browser-profile",
+  "browser": "auto",
   "cdp_url": "http://127.0.0.1:9229",
   "document_types": [
     "Statement",
     "Tax Document"
   ],
+  "default_start_date": "",
   "min_pdf_bytes": 2000,
   "max_path_length": 240,
   "delay_min_seconds": 2.5,
   "delay_max_seconds": 5.0,
-  "pilot_count": 5
+  "pilot_count": 5,
+  "//refuse": "On. It was off, because asking whether a statement mentions",
+  "//refuse2": "its row date got a yes from the wrong one, and eight dates",
+  "//refuse3": "here carry a statement per account. The check compares rows",
+  "//refuse4": "now, and the account name separates them. Measured over all",
+  "//refuse5": "64 statements: none refused, 303 of 372 neighbour swaps",
+  "//refuse6": "caught. A statement naming no account is left unchecked",
+  "//refuse7": "rather than thrown away.",
+  "refuse_wrong_documents": true
 }

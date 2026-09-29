@@ -116,6 +116,13 @@ SECURITY_CHALLENGE_MARKERS = [
     "two-factor", "multi-factor", "approve the request", "check your phone",
 ]
 
+# Throttling, which every other app watches for and these two did not. A
+# payroll site is the worst place to keep asking after it has said no.
+RATE_LIMIT_MARKERS = [
+    "too many requests", "rate limit", "try again later",
+    "temporarily unavailable", "http error 429", "unusual traffic",
+]
+
 # Controls that must NEVER be activated. A payroll site can redirect where
 # someone's wages land, so this matters more here than anywhere else in the
 # project. UKG Pro helpfully encodes intent in its own URLs too - compare
@@ -169,6 +176,7 @@ def is_safe_url(url: str) -> bool:
       path, so /c/hcm/EDIT/EePayrollDirectDepositSummary is refused while
       /c/hcm/VIEW/PayStatements is allowed.
     """
+    from paperpull_core.urls import is_safe_url as _host_allows
     if not BASE:
         return False
     try:
@@ -176,15 +184,10 @@ def is_safe_url(url: str) -> bool:
         got = urlparse(url or "")
     except ValueError:
         return False
-    if got.scheme != want.scheme or not got.hostname:
-        return False
-    if (got.hostname or "").lower() != (want.hostname or "").lower():
-        return False
-    if got.port != want.port:
-        return False
-    # credentials in a URL are never legitimate here and are a classic way to
-    # disguise the real host
-    if got.username or got.password:
+    # The host half is the core's, so this app answers it the same way as
+    # the other forty-seven. The tenant is one host and never a subdomain of
+    # it, because the configured address is the whole address.
+    if not _host_allows(url, {want.hostname or ""}, subdomains=False):
         return False
     if re.search(r"/c/hcm/(EDIT|ADD|DELETE)/", got.path or "", re.I):
         return False
@@ -202,13 +205,24 @@ def looks_signed_out(page) -> bool:
 
 
 def detect_security_challenge(page) -> Optional[str]:
+    """Names the passcode prompt or the throttling notice on screen, or
+    None. The title counts as well as the body, because a site that has
+    stopped answering often says so there first."""
+    try:
+        title = (page.title() or "").lower()
+    except Exception:
+        title = ""
     try:
         body = page.locator("body").inner_text(timeout=5000).lower()
     except Exception:
-        return None
+        body = ""
+    hay = title + "\n" + body
     for marker in SECURITY_CHALLENGE_MARKERS:
-        if marker in body:
+        if marker in hay:
             return f"Sign-in verification step detected: '{marker}'"
+    for marker in RATE_LIMIT_MARKERS:
+        if marker in hay:
+            return f"Possible rate limiting detected: '{marker}'"
     return None
 
 
@@ -248,7 +262,7 @@ def goto_documents(page) -> bool:
     """Open the pay-statements page.
 
     The API calls below work on their own, but loading the page first keeps
-    the session warm and gives the user something recognisable to look at.
+    the session warm and gives the user something recognizable to look at.
     """
     if not is_configured():
         raise SystemExit(configuration_help())

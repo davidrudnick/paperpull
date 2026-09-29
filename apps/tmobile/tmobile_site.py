@@ -26,8 +26,14 @@ import html as _html
 import logging
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import List, Optional, Tuple
+
+from paperpull_core.delivery import DOWNLOAD, DocumentRequest
+from paperpull_core.identity import Identity
+
+from paperpull_core.dates import last_day as _last_day
+from paperpull_core.dates import human_date as _human_date
+from paperpull_core.dates import checked as _checked_date
 
 log = logging.getLogger("tmobile_docs.site")
 
@@ -44,7 +50,6 @@ URLS = {
     "documents": HISTORICAL_URL,
     "statements": HISTORICAL_URL,
 }
-DOCUMENT_URL_CANDIDATES = [HISTORICAL_URL]
 
 LOGIN_URL_MARKERS = ["/login", "/signin", "/sign-in", "/auth", "/mfa",
                      "/verification", "/challenge"]
@@ -108,7 +113,7 @@ DATE_PATTERNS = [
                 r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
                 r"Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+(\d{4})", re.I), "mdY"),
     (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"), "mdy_slash"),
-    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "iso"),
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?!\d)"), "iso"),
 ]
 _MONTHS = {m: i + 1 for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
@@ -118,22 +123,12 @@ MONTH_YEAR_RE = re.compile(
     r"\s+(\d{4})", re.I)
 QUARTER_RE = re.compile(r"\bQ([1-4])\s*[' ]?\s*(\d{4})\b", re.I)
 YEAR_RE = re.compile(r"\b(19|20)(\d{2})\b")
-_LAST_DAY = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30,
-             7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31}
 
 _MON_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-_MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
-                "August", "September", "October", "November", "December"]
 
 
-def _last_day(year: int, month: int) -> int:
-    if month == 2 and (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
-        return 29
-    return _LAST_DAY[month]
-
-
-def parse_date(text: str) -> Optional[str]:
+def _parse_date_from_page(text: str) -> Optional[str]:
     if not text:
         return None
     for pattern, kind in DATE_PATTERNS:
@@ -150,6 +145,15 @@ def parse_date(text: str) -> Optional[str]:
         except (KeyError, ValueError):
             continue
     return None
+
+
+def parse_date(text):
+    """The date this provider's page is showing, as YYYY-MM-DD.
+
+    The reading is below, unchanged. This only refuses to believe a result
+    that names a day which does not exist, because a reference number is
+    shaped like a date and used to be taken for one."""
+    return _checked_date(_parse_date_from_page(text), None)
 
 
 def parse_period_date(text: str) -> Tuple[Optional[str], str]:
@@ -172,14 +176,6 @@ def parse_period_date(text: str) -> Tuple[Optional[str], str]:
         year = int(m.group(1) + m.group(2))
         return f"{year:04d}-12-31", str(year)
     return None, ""
-
-
-def _human_date(iso: str) -> str:
-    try:
-        y, m, d = iso.split("-")
-        return f"{_MONTH_NAMES[int(m) - 1]} {int(d)}, {y}"
-    except Exception:
-        return iso
 
 
 # ---------------------------------------------------------------------------
@@ -367,40 +363,61 @@ def collect_download_docs(page) -> List[RawDoc]:
 def _btn_re_for(iso: str) -> Optional[re.Pattern]:
     """A regex matching the detailed-bill button for the bill dated `iso`. The
     button's name is like 'Aug 12, 2026 Download detailed bill PDF'."""
+    # The guard used to cover only the unpacking, which a date like
+    # "not-a-date" survives, because it splits into three parts too. The
+    # ValueError then came out of int() one line further down and took
+    # the run with it instead of skipping one bill.
     try:
         y, m, d = iso.split("-")
-    except Exception:
+        month, day = int(m), int(d)
+        mon = _MON_ABBR[month - 1]
+    except (ValueError, IndexError, AttributeError):
         return None
-    mon = _MON_ABBR[int(m) - 1]
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        return None
     return re.compile(
-        rf"{mon}\w*\.?\s+0*{int(d)},?\s+{y}\b.*detailed\s+bill",
+        rf"{mon}\w*\.?\s+0*{day},?\s+{y}\b.*detailed\s+bill",
         re.I | re.S)
 
 
-def download_bill(page, dl_dir, iso_date: str, out_path) -> bool:
-    """Find the bill dated `iso_date` on the history page and click its
-    'Download detailed bill' button, capturing the real download event.
+def identity_for(doc) -> Identity:
+    """What a bill's row carries. A date and nothing else. There is no
+    amount and no document number on the history page."""
+    return Identity(date=str(getattr(doc, "date", "") or "")[:10])
 
-    `dl_dir` is unused - T-Mobile fires an ordinary download that Playwright's
-    expect_download captures directly (kept in the signature for parity with
-    the shared orchestrator)."""
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
 
+def bill_request(page, iso_date: str) -> Optional[DocumentRequest]:
+    """Everything up to the click, for the bill dated `iso_date`.
+
+    Open the history page, dismiss whatever is over it, find that bill's
+    "Download detailed bill" button and check the control is a document
+    action. Then stop.
+
+    What happens after the click is not this app's business. T-Mobile
+    fires an ordinary download today and Playwright sees it, but a
+    provider is free to change that to an inline tab or a blob without
+    telling anyone, and the difference also depends on whether this is
+    driving its own browser or one the user launched. So the click is
+    handed to delivery.deliver, which arms every way of catching a
+    document before firing it once and says afterwards which one
+    answered.
+
+    None when the bill cannot be reached or its control is not one this
+    app is allowed to press."""
     if "/bill/historical" not in (page.url or ""):
         if not goto_documents(page):
             log.info("could not open bill history for %s", iso_date)
-            return False
+            return None
     dismiss_overlay(page)
 
     pat = _btn_re_for(iso_date)
     if pat is None:
         log.info("bad iso date %r", iso_date)
-        return False
+        return None
     btn = page.get_by_role("button", name=pat)
     if btn.count() == 0:
         log.info("detailed-bill button not found for %s", iso_date)
-        return False
+        return None
 
     # safety: the control must be a document action, never a forbidden one
     try:
@@ -410,21 +427,18 @@ def download_bill(page, dl_dir, iso_date: str, out_path) -> bool:
         label = ""
     if label and not is_safe_control(label):
         log.info("refusing unsafe control %r for %s", label, iso_date)
-        return False
+        return None
 
-    from paperpull_core.receipt_pdf import save_download
     try:
         btn.first.scroll_into_view_if_needed(timeout=4000)
     except Exception:
         pass
-    try:
-        with page.expect_download(timeout=60000) as dl:
-            btn.first.click()
-        save_download(dl.value, out_path)
-        return True
-    except Exception as e:
-        log.info("download click failed for %s: %s", iso_date, e)
-        return False
+    # A bill carries its date and nothing else this app knows about, so
+    # that is the one fact there is to check a saved file against. There
+    # is no amount and no document number on the history row.
+    return DocumentRequest(trigger=lambda: btn.first.click(),
+                           expect=Identity(date=iso_date),
+                           hints=(DOWNLOAD,))
 
 
 # ---------------------------------------------------------------------------
@@ -480,15 +494,9 @@ ALLOWED_HOSTS = {'t-mobile.com'}
 
 
 def is_safe_url(url: str) -> bool:
-    """True only for an https URL on one of this provider's own hosts."""
-    from urllib.parse import urlparse
-    try:
-        got = urlparse(url or "")
-    except ValueError:
-        return False
-    if got.scheme != "https" or not got.hostname:
-        return False
-    if got.username or got.password:
-        return False
-    host = got.hostname.lower().rstrip(".")
-    return any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS)
+    """True only for an https URL on one of this provider's own hosts.
+
+    The check itself lives in the core, so all of them answer the same way.
+    This app keeps the hosts, which is the part that really is its own."""
+    from paperpull_core.urls import is_safe_url as _host_allows
+    return _host_allows(url, ALLOWED_HOSTS)

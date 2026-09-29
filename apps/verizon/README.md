@@ -1,4 +1,4 @@
-# Verizon (Fios) — bill downloader
+# Verizon (Fios) bill downloader
 
 Downloads your Verizon **Fios / Home Internet** monthly bill statements as PDFs
 from My Verizon. Read-only, delete-safe, part of [PaperPull](../../README.md).
@@ -6,10 +6,10 @@ from My Verizon. Read-only, delete-safe, part of [PaperPull](../../README.md).
 ## Setup
 
 ```bat
-setup.bat                 REM one-time: venv + Playwright
-login.bat                 REM opens Microsoft Edge on port 9230 — sign in yourself
-run_pilot.bat             REM download the newest 5 bills as a test
-run_all.bat               REM download every available bill (up to ~24 months)
+setup.bat                         REM one-time: venv + Playwright
+login.bat                         REM opens Microsoft Edge on port 9230, sign in yourself
+paperpull verizon pilot           REM download the newest 5 bills as a test
+paperpull verizon all             REM download every available bill (up to ~24 months)
 ```
 
 ## How it works
@@ -33,7 +33,8 @@ run_all.bat               REM download every available bill (up to ~24 months)
 
 - **Fios / Home Internet only.** If you also have (or had) Verizon *Wireless*,
   that's a separate account. An **active** second account can be added with the
-  multi-account feature (`add_account.py`, its own login/profile/port). A
+  multi-account feature (`paperpull verizon add-account NAME`, its own
+  login/profile/port). A
   **closed** wireless account is generally no longer downloadable through My
-  Verizon — check your email for the final Verizon Wireless bill PDFs instead.
+  Verizon, check your email for the final Verizon Wireless bill PDFs instead.
 - Delete-safe & multi-account like every PaperPull app.

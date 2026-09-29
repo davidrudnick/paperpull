@@ -1,14 +1,18 @@
 # Maintaining this fork
 
-Based on upstream main `d2d5a4a`, which includes
-v0.19.0-beta.1 changes. Upstream's rewritten history is the foundation; the old
-local history is not merged into this branch.
+Based on upstream main `7684a41` (0.39.2), merged on 2026-09-28 over the
+earlier `d2d5a4a` (0.19.0-beta.1) base. Upstream's rewritten history is the
+foundation; the old local history is not merged into this branch.
 
 ## Included changes
 
-- Six additional providers: Bright Start, Capital One, Huntington, Schwab,
-  STP / BluePrint and U.S. Bank. They use the current core and explicit host
-  checks. Fresh supervised pilots of the reconciled versions remain pending.
+- Three additional providers: Bright Start, Huntington and STP / BluePrint.
+  Capital One, Schwab and U.S. Bank, first ported here, now ship upstream and
+  come from there. The three fork-only apps run on the current core and pass
+  their own tests, but they predate upstream's every-app conventions (failure
+  files, run journals, diagnose surveys, filename templates, account keys), so
+  upstream's cross-app tests in `core/tests` fail for them until they are
+  brought onto that pattern. Fresh supervised pilots remain pending.
 - Upstream's provider setup, add/remove controls, archive freshness and gap
   detection. The old display-only hiding preferences are intentionally retired.
 - A Last panel run column showing successful Run All / Resume exits per
@@ -31,7 +35,8 @@ and launch/port checks remain available. Set `browser` explicitly to override.
 Before using a different browser executable with an existing profile, close
 that profile's current browser. Each provider uses its own matching tab; if no
 matching tab exists it opens one instead of taking over a different provider.
-Target also supports CDP attachment and does not close the shared browser.
+Target attaches over CDP as upstream's Target now does (#48); in this fork it
+also works in a tab of its own and does not close the shared browser.
 
 New provider installations created by upstream's setup keep their separate
 profile/port configuration until explicitly changed. Shared mode is opt-in.
@@ -40,9 +45,14 @@ profile/port configuration until explicitly changed. Shared mode is opt-in.
 
 Run `python3 tools/setup_shared.py` (Windows: `python tools/setup_shared.py`)
 from the repository. This installs all app requirements, the GUI and the core
-into the root `.venv`; it does not download or launch a browser. App and GUI
-launchers prefer this environment when present and otherwise retain their
-per-app behavior. Upstream's setup scripts remain available.
+into the root `.venv`; it does not download or launch a browser. Upstream
+replaced the per-app run launchers with one command, and it runs an app on the
+Python that starts it when the app has no `.venv` of its own, so run apps with
+`.venv/bin/python paperpull.py <app> <command>` (Windows:
+`.venv\Scripts\python.exe paperpull.py <app> <command>`). The double-click
+files each app still ships (login, review_names) and the GUI launchers prefer
+this environment when present and otherwise retain their per-app behavior.
+Upstream's setup scripts remain available.
 
 ## Cache cleanup
 

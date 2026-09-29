@@ -16,7 +16,7 @@ STATUS, read before trusting anything below.
 
   There are NO guessed URLs here. A document is fetched by its (type, id)
   pair, both validated as integers against the type map below, so the request
-  path is built from numbers this app recognises rather than from any stored
+  path is built from numbers this app recognizes rather than from any stored
   string.
 
 SAFETY (this is a US government pay system):
@@ -38,6 +38,9 @@ import logging
 import re
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+from paperpull_core.dates import last_day as _last_day
+from paperpull_core.dates import checked as _checked_date
 
 log = logging.getLogger("mypay_docs.site")
 
@@ -115,7 +118,7 @@ DATE_PATTERNS = [
                 r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
                 r"Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+(\d{4})", re.I), "mdY"),
     (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"), "mdy_slash"),
-    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "iso"),
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?!\d)"), "iso"),
 ]
 _MONTHS = {m: i + 1 for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
@@ -125,17 +128,9 @@ MONTH_YEAR_RE = re.compile(
     r"\s+(\d{4})", re.I)
 QUARTER_RE = re.compile(r"\bQ([1-4])\s*[' ]?\s*(\d{4})\b", re.I)
 YEAR_RE = re.compile(r"\b(19|20)(\d{2})\b")
-_LAST_DAY = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30,
-             7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31}
 
 
-def _last_day(year: int, month: int) -> int:
-    if month == 2 and (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
-        return 29
-    return _LAST_DAY[month]
-
-
-def parse_date(text: str) -> Optional[str]:
+def _parse_date_from_page(text: str) -> Optional[str]:
     if not text:
         return None
     for pattern, kind in DATE_PATTERNS:
@@ -152,6 +147,15 @@ def parse_date(text: str) -> Optional[str]:
         except (KeyError, ValueError):
             continue
     return None
+
+
+def parse_date(text):
+    """The date this provider's page is showing, as YYYY-MM-DD.
+
+    The reading is below, unchanged. This only refuses to believe a result
+    that names a day which does not exist, because a reference number is
+    shaped like a date and used to be taken for one."""
+    return _checked_date(_parse_date_from_page(text), None)
 
 
 def parse_period_date(text: str) -> Tuple[Optional[str], str]:
@@ -239,19 +243,14 @@ def is_safe_control(name: str) -> bool:
 
 
 def is_safe_url(url: str) -> bool:
-    """On myPay's host, by parsed comparison, never a string prefix."""
-    from urllib.parse import urlparse
-    try:
-        got = urlparse(url or "")
-    except ValueError:
-        return False
-    if got.scheme != "https" or not got.hostname:
-        return False
-    if (got.hostname or "").lower() not in ALLOWED_HOSTS:
-        return False
-    if got.username or got.password:
-        return False
-    return True
+    """True only for an https URL on exactly one of this provider's own
+    hosts, never a subdomain of one.
+
+    The check itself lives in the core, so all of them answer the same way.
+    This app keeps the hosts and its refusal to follow subdomains, which is
+    how it has always behaved."""
+    from paperpull_core.urls import is_safe_url as _host_allows
+    return _host_allows(url, ALLOWED_HOSTS, subdomains=False)
 
 
 def is_mypay_frame(frame) -> bool:

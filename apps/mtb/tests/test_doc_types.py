@@ -189,7 +189,7 @@ def test_settings_and_money_labels_that_once_slipped_through():
         assert not site.is_safe_control(label), label
 
 
-def test_a_signin_page_returned_instead_of_a_pdf_is_recognised():
+def test_a_signin_page_returned_instead_of_a_pdf_is_recognized():
     """M&T answers an expired session with HTTP 200 and an HTML login page. If
     that is not spotted, every remaining document is filed as 'manual review'
     and the run ends looking successful with nothing saved."""
@@ -229,8 +229,8 @@ def test_the_cloned_navy_federal_machinery_is_gone():
 
 
 def test_unknown_statement_types_are_not_called_mortgage_statements():
-    """The page also lists notices and analysis statements. An unrecognised
-    t= used to be labelled "Mortgage Statement", which would file a notice
+    """The page also lists notices and analysis statements. An unrecognized
+    t= used to be labeled "Mortgage Statement", which would file a notice
     under a name that is not true."""
     import mtb_site
     assert mtb_site._STMT_TYPE.get("MTGSTMT") == "Mortgage Statement"

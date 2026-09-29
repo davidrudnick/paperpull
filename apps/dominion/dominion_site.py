@@ -26,12 +26,16 @@ from __future__ import annotations
 
 import base64
 import html as _html
-import json
 import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+from paperpull_core.dates import last_day as _last_day
+from paperpull_core.dates import human_date as _human_date
+from paperpull_core.dates import checked as _checked_date
+from paperpull_core.controls import click_next_page as _click_next_page
 
 log = logging.getLogger("dominion_docs.site")
 
@@ -44,8 +48,6 @@ URLS = {
     "statements": f"{BASE}/account/billing-and-payments",
     "documents_alt": f"{BASE}/account",
 }
-DOCUMENT_URL_CANDIDATES = [URLS["documents"], URLS["statements"],
-                           URLS["documents_alt"]]
 
 LOGIN_URL_MARKERS = ["/login", "/signin", "/sign-in", "/auth", "/mfa",
                      "/verification", "/challenge"]
@@ -108,7 +110,7 @@ DATE_PATTERNS = [
                 r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
                 r"Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+(\d{4})", re.I), "mdY"),
     (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"), "mdy_slash"),
-    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "iso"),
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?!\d)"), "iso"),
 ]
 _MONTHS = {m: i + 1 for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
@@ -118,17 +120,9 @@ MONTH_YEAR_RE = re.compile(
     r"\s+(\d{4})", re.I)
 QUARTER_RE = re.compile(r"\bQ([1-4])\s*[' ]?\s*(\d{4})\b", re.I)
 YEAR_RE = re.compile(r"\b(19|20)(\d{2})\b")
-_LAST_DAY = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30,
-             7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31}
 
 
-def _last_day(year: int, month: int) -> int:
-    if month == 2 and (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
-        return 29
-    return _LAST_DAY[month]
-
-
-def parse_date(text: str) -> Optional[str]:
+def _parse_date_from_page(text: str) -> Optional[str]:
     if not text:
         return None
     for pattern, kind in DATE_PATTERNS:
@@ -145,6 +139,15 @@ def parse_date(text: str) -> Optional[str]:
         except (KeyError, ValueError):
             continue
     return None
+
+
+def parse_date(text):
+    """The date this provider's page is showing, as YYYY-MM-DD.
+
+    The reading is below, unchanged. This only refuses to believe a result
+    that names a day which does not exist, because a reference number is
+    shaped like a date and used to be taken for one."""
+    return _checked_date(_parse_date_from_page(text), None)
 
 
 def parse_period_date(text: str) -> Tuple[Optional[str], str]:
@@ -326,19 +329,15 @@ def expand_all(page) -> None:
 
 
 def next_page(page) -> bool:
-    try:
-        loc = page.locator(FALLBACK["next_page"])
-        if loc.count() > 0 and loc.first.is_visible() and loc.first.is_enabled():
-            label = (loc.first.inner_text(timeout=800) or "") + \
-                (loc.first.get_attribute("aria-label") or "")
-            if FORBIDDEN_CONTROL_RE.search(label):
-                return False
-            loc.first.click()
-            page.wait_for_timeout(2500)
-            return True
-    except Exception:
-        pass
-    return False
+    """One page forward, through a control that says it pages forward.
+
+    Judged by an allowlist in the core rather than by FORBIDDEN_CONTROL_RE,
+    because that blocklist refuses the word "next". Correctly, since "Next"
+    is also what a wizard's commit button says, and fatally here, because it
+    meant this could never page forward at all and the run reported success
+    having seen only the first page.
+    """
+    return _click_next_page(page, FALLBACK["next_page"])
 
 
 @dataclass
@@ -393,70 +392,6 @@ def collect_documents(page) -> List[RawDoc]:
     return docs
 
 
-def collect_documents_via_api(page) -> List[dict]:
-    """Capture Dominion's documents JSON API as the page loads/pages. Repair
-    the URL/response matcher after diagnose. Returns raw document dicts."""
-    batches: List[list] = []
-
-    def on_resp(r):
-        try:
-            u = r.url
-            if not re.search(r"document|statement|report", u, re.I):
-                return
-            if "json" not in (r.headers.get("content-type", "") or "").lower():
-                return
-            data = json.loads(r.text())
-            # Dominion list endpoints usually return {"results":[...]} or a
-            # bare list. Accept either.
-            items = None
-            if isinstance(data, dict):
-                for k in ("results", "documents", "data", "items"):
-                    if isinstance(data.get(k), list):
-                        items = data[k]
-                        break
-            elif isinstance(data, list):
-                items = data
-            if items:
-                batches.append(items)
-        except Exception:
-            pass
-
-    page.on("response", on_resp)
-    try:
-        goto_documents(page)
-        page.wait_for_timeout(3500)
-        last = -1
-        stagnant = 0
-        for _ in range(150):
-            for _ in range(3):
-                page.mouse.wheel(0, 5000)
-                page.wait_for_timeout(700)
-            advanced = next_page(page)
-            total = sum(len(b) for b in batches)
-            if total == last and not advanced:
-                stagnant += 1
-                if stagnant >= 3:
-                    break
-            else:
-                stagnant = 0
-                last = total
-    finally:
-        try:
-            page.remove_listener("response", on_resp)
-        except Exception:
-            pass
-
-    docs: dict = {}
-    for batch in batches:
-        for d in batch:
-            if not isinstance(d, dict):
-                continue
-            did = d.get("id") or d.get("documentId") or d.get("url")
-            if did and did not in docs:
-                docs[did] = d
-    return list(docs.values())
-
-
 _BLOB_FETCH_JS = r"""async () => {
     const f = document.querySelector("iframe[src^='blob:']");
     if (!f || !f.src) return null;
@@ -509,16 +444,6 @@ def download_by_url(page, url: str, out_path) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
-# Dominion document pages (verified 2026-07). Every bill lives on the one
-# paginated billing-history page as an <a download href="#"> whose own text is
-# the title; clicking it fires a real download event. There is no tax area -
-# a utility issues no tax forms.
-def document_source_urls() -> List[Tuple[str, str]]:
-    """The single billing-history page holds every statement (paginated)."""
-    return [(BILLING_URL, "statements")]
-
-
 # How many pages of bills to walk at most (10 bills/page) - a safety bound.
 _MAX_PAGES = 40
 
@@ -547,18 +472,6 @@ def collect_download_docs(page) -> List[RawDoc]:
         if not added:
             break
     return docs
-
-
-_MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
-                "August", "September", "October", "November", "December"]
-
-
-def _human_date(iso: str) -> str:
-    try:
-        y, m, d = iso.split("-")
-        return f"{_MONTH_NAMES[int(m) - 1]} {int(d)}, {y}"
-    except Exception:
-        return iso
 
 
 def _find_panel_for(page, iso: str):
@@ -667,37 +580,6 @@ def is_unavailable_bill(out_path) -> bool:
         return False
 
 
-def find_row_download(page, title: str, date_text: str = ""):
-    """Re-find a row's safe download control by its text. Repair after
-    diagnose once the real row/menu structure is known."""
-    try:
-        rows = page.locator(FALLBACK["doc_row"])
-        for i in range(rows.count()):
-            row = rows.nth(i)
-            try:
-                text = row.inner_text(timeout=800) or ""
-            except Exception:
-                continue
-            if title and title[:40] not in text:
-                continue
-            if date_text and date_text not in text:
-                continue
-            link = row.locator("a[download], a[href$='.pdf'], a[href*='.pdf']")
-            if link.count() > 0:
-                return link.first
-            for b in row.locator("button, a").all():
-                try:
-                    label = (b.inner_text(timeout=600) or "") + \
-                        (b.get_attribute("aria-label") or "")
-                except Exception:
-                    label = ""
-                if is_safe_control(label):
-                    return b
-    except Exception:
-        pass
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Host allowlist. Added repo-wide after a review found this app would fetch or
 # navigate to whatever URL a stored record or a page attribute contained, using
@@ -708,15 +590,9 @@ ALLOWED_HOSTS = {'dominionenergy.com'}
 
 
 def is_safe_url(url: str) -> bool:
-    """True only for an https URL on one of this provider's own hosts."""
-    from urllib.parse import urlparse
-    try:
-        got = urlparse(url or "")
-    except ValueError:
-        return False
-    if got.scheme != "https" or not got.hostname:
-        return False
-    if got.username or got.password:
-        return False
-    host = got.hostname.lower().rstrip(".")
-    return any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS)
+    """True only for an https URL on one of this provider's own hosts.
+
+    The check itself lives in the core, so all of them answer the same way.
+    This app keeps the hosts, which is the part that really is its own."""
+    from paperpull_core.urls import is_safe_url as _host_allows
+    return _host_allows(url, ALLOWED_HOSTS)

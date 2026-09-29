@@ -3,12 +3,12 @@
 Downloads your available Target.com purchase history (Online and In-store),
 saves each printable receipt directly as a PDF, and maintains two CSV files:
 
-- `Target Order History.csv` — one row per purchased item
-- `Target Receipt Index.csv` — one row per downloaded PDF
+- `Target Order History.csv`, one row per purchased item
+- `Target Receipt Index.csv`, one row per downloaded PDF
 
 Everything runs **locally**. Nothing (item names, receipts, account data) is
 sent to any external AI API or third-party service. You sign in to Target
-**manually** — the tool never touches your credentials, and never bypasses
+**manually**, the tool never touches your credentials, and never bypasses
 CAPTCHAs or security checks.
 
 ## Setup (one time)
@@ -25,12 +25,12 @@ CAPTCHAs or security checks.
 |------|---------|--------------|
 | 1 | `login.bat` | Manual sign-in, saved in local browser profile |
 | 2 | `python target_receipts.py --diagnose` | Inspects one purchase per section; writes Diagnostics |
-| 3 | `run_pilot.bat` | 5 newest Online + 3 newest In-store; then **stops** |
+| 3 | `paperpull target pilot` | 5 newest Online + 3 newest In-store; then **stops** |
 | 4 | inspect the PDFs/CSVs | You approve before anything bigger runs |
-| 5 | `run_all.bat` | Full history (asks for `YES` confirmation) |
-| any time | `resume.bat` | Continue after an interruption — never restarts finished work |
-| any time | `verify_receipts.bat` | Re-validate every indexed PDF |
-| any time | `review_names.bat` | Fix low-confidence filenames interactively |
+| 5 | `paperpull target all` | Full history (asks for `YES` confirmation) |
+| any time | `paperpull target resume` | Continue after an interruption, never restarts finished work |
+| any time | `paperpull target verify` | Re-validate every indexed PDF |
+| any time | `review_names.bat`, `./review_names.command` on a Mac, or `paperpull target review-names` | Fix low-confidence filenames interactively |
 
 ## All command-line options
 
@@ -57,13 +57,13 @@ C:\Users\YOU\Downloads\Target Receipts\
 
 Filenames: `YYYY-MM-DD Target <Purchase Summary> Receipt.pdf`
 (e.g. `2024-12-31 Target Groceries Receipt.pdf`). Collisions get ` (2)`,
-` (3)`… — an existing PDF is **never overwritten**.
+` (3)`…, an existing PDF is **never overwritten**.
 
 ## Classification
 
 `category_rules.json` holds editable keyword → category rules. Classification
 is deterministic and fully local. Low-confidence purchases are saved anyway,
-marked *Review Needed*, and can be renamed with `review_names.bat`.
+marked *Review Needed*, and can be renamed with `paperpull target review-names`.
 
 ## When Target changes its website
 
@@ -79,7 +79,7 @@ like now (Diagnostics folder), then adjust `target_site.py`.
   rate limiting. Never retries aggressively, never evades detection.
 - Sequential processing with polite randomized delays.
 - Progress written atomically after every purchase; CSV/JSON backed up to
-  `Backups\` before rewrites; interrupted runs resume with `resume.bat`.
+  `Backups\` before rewrites; interrupted runs resume with `paperpull target resume`.
 
 ## Tests
 

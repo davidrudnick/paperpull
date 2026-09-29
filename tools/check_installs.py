@@ -1,15 +1,15 @@
 """Compare standalone installs against this repo, and report drift.
 
 The apps used to be thirteen independent copies of the same support code, and
-the copies quietly drifted apart — some predated features others had. The
+the copies quietly drifted apart, some predated features others had. The
 shared core removed the duplication, and this script is what keeps it removed:
 run it against a folder of installs to see, at a glance, whether any of them
 has fallen behind the repo or is running a stale core.
 
     python tools/check_installs.py "D:\\path\\to\\your\\installs"
 
-Only code is compared. Nothing that IS an install — config.json, progress and
-discovery state, the CSVs, the PDFs, the browser profile — is read or
+Only code is compared. Nothing that IS an install, config.json, progress and
+discovery state, the CSVs, the PDFs, the browser profile, is read or
 reported, so this is safe to run against a private archive and safe to paste
 the output of.
 """
@@ -53,6 +53,22 @@ def core_version(install: Path) -> str:
     return "not installed"
 
 
+def core_differs(install: Path) -> list[str]:
+    """Core files in the install's copy that do not match the repo's.
+
+    The version string is not enough. Nineteen installs once carried a core
+    whose string matched the repo while browser.py did not, and every one of
+    them crashed on Login after their entry scripts were refreshed. This
+    check said they were in sync."""
+    found = [p.parent for p in (install / ".venv").rglob("paperpull_core/__init__.py")]
+    if not found:
+        return []
+    pkg = found[0]
+    repo = REPO / "core" / "paperpull_core"
+    return [src.name for src in sorted(repo.glob("*.py"))
+            if not (pkg / src.name).is_file() or digest(pkg / src.name) != digest(src)]
+
+
 def repo_core_version() -> str:
     m = re.search(r'__version__ = "([^"]+)"',
                   (REPO / "core" / "paperpull_core" / "__init__.py").read_text(encoding="utf-8"))
@@ -62,7 +78,7 @@ def repo_core_version() -> str:
 def compare(install: Path) -> dict:
     app = app_for(install)
     if app is None:
-        return {"install": install.name, "status": "unrecognised", "app": None}
+        return {"install": install.name, "status": "unrecognized", "app": None}
     differing, missing = [], []
     for f in sorted(app.glob("*.py")) + sorted(app.glob("*.bat")):
         if PRIVATE.search(f.name):
@@ -72,13 +88,15 @@ def compare(install: Path) -> dict:
             missing.append(f.name)
         elif digest(theirs) != digest(f):
             differing.append(f.name)
+    core_diff = core_differs(install)
     return {
         "install": install.name,
         "app": app.name,
-        "status": "in sync" if not (differing or missing) else "DRIFTED",
+        "status": "in sync" if not (differing or missing or core_diff) else "DRIFTED",
         "differs": differing,
         "missing": missing,
         "core": core_version(install),
+        "core_differs": core_diff,
     }
 
 
@@ -104,7 +122,7 @@ def main() -> int:
     drifted = 0
     print(f"repo core: {want_core}\n")
     for r in results:
-        if r["status"] == "unrecognised":
+        if r["status"] == "unrecognized":
             print(f"  {r['install']:34} (not a PaperPull install - skipped)")
             continue
         core = r["core"]
@@ -114,6 +132,8 @@ def main() -> int:
             print(f"        differs: {f}")
         for f in r["missing"]:
             print(f"        missing: {f}")
+        for f in r["core_differs"]:
+            print(f"        core differs: {f}")
         if r["status"] != "in sync" or core != want_core:
             drifted += 1
     print(f"\n{len(results) - drifted} in sync, {drifted} needing attention.")

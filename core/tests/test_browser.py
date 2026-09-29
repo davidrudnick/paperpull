@@ -1,6 +1,6 @@
 """Browser discovery across platforms.
 
-The paths are faked so the same assertions run on any OS — this checks the
+The paths are faked so the same assertions run on any OS, this checks the
 lookup logic and the ordering, which is what actually differs between
 Windows, macOS and Linux.
 """
@@ -109,8 +109,12 @@ def test_port_is_read_from_the_cdp_url(url, expected):
 
 def test_launch_passes_the_profile_and_port(monkeypatch, tmp_path):
     seen = {}
+    # The launcher asks browser_candidates, not find_browser, so the stand-in
+    # has to go there. Patching find_browser alone left the test reading the
+    # browsers installed on whoever's machine ran it, and it failed on a
+    # machine with none (a contributor hit this, #25).
     monkeypatch.setattr(browser, "browser_candidates",
-                        lambda **kwargs: [("Chromium", "/x/c")])
+                        lambda prefer_real=False, mode=browser.AUTO: [("Chromium", "/x/c")])
     monkeypatch.setattr(browser.subprocess, "Popen", lambda args, **kw: seen.update(args=args))
     # no real browser starts here, so stand in for the port coming up
     monkeypatch.setattr(browser, "wait_for_debug_port", lambda port, timeout=20.0: True)
@@ -258,7 +262,7 @@ def test_an_installed_browser_is_preferred_so_nothing_is_downloaded(monkeypatch)
 
 def test_installed_mode_never_reaches_for_the_bundled_copy(monkeypatch):
     """Somebody on a managed machine may not want this near their own browser,
-    and somebody else may not want a 400 MB download. Both are honoured."""
+    and somebody else may not want a 400 MB download. Both are honored."""
     monkeypatch.setattr(browser, "_real_browsers", lambda: [(browser.EDGE, "edge")])
     monkeypatch.setattr(browser, "_bundled_chromium", lambda: ["bundled"])
     assert browser.browser_candidates(mode=browser.INSTALLED) == [(browser.EDGE, "edge")]
@@ -311,11 +315,11 @@ def test_nothing_is_downloaded_behind_a_closed_stdin(monkeypatch, capsys):
 
 
 def test_the_wording_says_their_own_profile_is_not_used():
-    """Someone is about to look at a browser they recognise which knows none of
+    """Someone is about to look at a browser they recognize which knows none of
     their accounts. Both halves have to be said, that their real profile is
     untouched AND that they are therefore not signed in."""
     note = browser.profile_note("Microsoft Edge")
-    # Whitespace-normalised, because the note is hard-wrapped for a console and
+    # Whitespace-normalized, because the note is hard-wrapped for a console and
     # a phrase can straddle a line break.
     flat = " ".join(note.split()).lower()
     assert "separate profile" in flat
@@ -326,15 +330,14 @@ def test_the_wording_says_their_own_profile_is_not_used():
 
 # -- bugs found in review, before 1.0 ---------------------------------------
 
-def test_other_chromium_browsers_are_recognised(monkeypatch):
+def test_other_chromium_browsers_are_recognized(monkeypatch):
     """The message offered to drive "Chrome, Edge, Brave or any other
     Chromium-based browser" while the detector only ever looked for Chrome and
     Edge. Somebody running Brave was pushed into a 400 MB download of a browser
     they effectively already had."""
-    import inspect
-    src = inspect.getsource(browser._real_browsers)
+    known = " ".join(exe for _n, exe, _p in browser._WINDOWS_BROWSERS).lower()
     for family in ("brave", "vivaldi", "opera"):
-        assert family in src.lower(), family
+        assert family in known, family
 
 
 def test_the_same_install_is_never_offered_twice(monkeypatch, tmp_path):
@@ -346,12 +349,17 @@ def test_the_same_install_is_never_offered_twice(monkeypatch, tmp_path):
     asserted against an empty list and so proved nothing.
     """
     monkeypatch.setattr(browser.sys, "platform", "win32")
+    monkeypatch.setenv("ProgramW6432", str(tmp_path))
     monkeypatch.setenv("PROGRAMFILES", str(tmp_path))
     monkeypatch.setenv("PROGRAMFILES(X86)", str(tmp_path))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     edge = tmp_path / "Microsoft" / "Edge" / "Application" / "msedge.exe"
     edge.parent.mkdir(parents=True)
     edge.write_bytes(b"")
+    # The registry names the same file, with different casing, which is the
+    # commonest way one install turns up twice.
+    monkeypatch.setattr(browser, "_registry_browsers",
+                        lambda: [(browser.EDGE, str(edge).upper())])
 
     found = browser._real_browsers()
     assert found, "the fixture browser was not detected at all"
@@ -407,3 +415,179 @@ def test_a_normal_build_uses_the_documented_command(monkeypatch):
     monkeypatch.delattr(browser.sys, "frozen", raising=False)
     assert browser.browser_install_command()[1:] == \
         ["-m", "playwright", "install", "chromium"]
+
+
+# -- Windows on ARM, and every other machine where Program Files lies -------
+
+class _FakeWinreg:
+    """Just enough of winreg to see which keys were asked for and how."""
+    HKEY_CURRENT_USER = "HKCU"
+    HKEY_LOCAL_MACHINE = "HKLM"
+    KEY_READ = 0x20019
+    KEY_WOW64_64KEY = 0x0100
+
+    def __init__(self, values):
+        self.values = values      # (hive, subkey) -> default value
+        self.opened = []
+
+    def OpenKey(self, hive, sub, reserved, access):
+        self.opened.append((hive, sub, access))
+        if (hive, sub) not in self.values:
+            raise OSError(2, "not found")
+
+        class _Key:
+            def __enter__(self_):
+                return (hive, sub)
+
+            def __exit__(self_, *a):
+                return False
+        return _Key()
+
+    def QueryValueEx(self, key, name):
+        return self.values[key], 1
+
+
+def test_the_registry_is_asked_first_in_the_64_bit_view(monkeypatch, tmp_path):
+    """An x64 build running under emulation on an ARM64 machine sees the
+    emulated registry view by default, where a native ARM64 Chrome is not
+    registered. App Paths in the 64-bit view is the browser's own statement
+    of where it is, whatever this process happens to be."""
+    chrome = tmp_path / "Google" / "Chrome" / "Application" / "chrome.exe"
+    reg = _FakeWinreg({
+        ("HKLM", browser._APP_PATHS + "\\chrome.exe"): '"%s"' % chrome,
+        ("HKCU", browser._APP_PATHS + "\\msedge.exe"): "%FAKEROOT%\\msedge.exe",
+    })
+    monkeypatch.setitem(sys.modules, "winreg", reg)
+    monkeypatch.setenv("FAKEROOT", str(tmp_path))
+    found = browser._registry_browsers()
+    assert (browser.EDGE, str(tmp_path / "msedge.exe")) in found     # expanded, HKCU honored
+    assert (browser.CHROME, str(chrome)) in found                     # quotes stripped
+    assert all(access & reg.KEY_WOW64_64KEY for _h, _s, access in reg.opened)
+    hives = [h for h, s, _a in reg.opened if s.endswith("chrome.exe")]
+    assert hives == ["HKCU", "HKLM"], "the per-user install must be asked first"
+
+
+def test_no_winreg_means_no_registry_not_a_crash(monkeypatch):
+    monkeypatch.setitem(sys.modules, "winreg", None)
+    assert browser._registry_browsers() == []
+
+
+def test_the_real_64_bit_program_files_is_searched_even_when_program_files_lies(monkeypatch, tmp_path):
+    """Under emulation, or from a 32-bit process, PROGRAMFILES points at
+    "Program Files (x86)". ProgramW6432 always points at the real one, and a
+    Chrome that lives only there was invisible before."""
+    monkeypatch.setattr(browser.sys, "platform", "win32")
+    real = tmp_path / "Program Files"
+    x86 = tmp_path / "Program Files (x86)"
+    chrome = real / "Google" / "Chrome" / "Application" / "chrome.exe"
+    chrome.parent.mkdir(parents=True)
+    chrome.write_bytes(b"")
+    x86.mkdir()
+    monkeypatch.setenv("ProgramW6432", str(real))
+    monkeypatch.setenv("PROGRAMFILES", str(x86))
+    monkeypatch.setenv("PROGRAMFILES(X86)", str(x86))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    monkeypatch.setattr(browser, "_registry_browsers", lambda: [])
+    assert browser._real_browsers() == [(browser.CHROME, str(chrome))]
+    assert browser._windows_roots()[0] == str(real)
+
+
+def test_brand_preference_beats_where_a_browser_was_found(monkeypatch, tmp_path):
+    """The registry can list Brave when Edge is only on disk. Edge is still
+    offered first, since the order is by brand, the thing the user is told."""
+    monkeypatch.setattr(browser.sys, "platform", "win32")
+    edge = tmp_path / "Microsoft" / "Edge" / "Application" / "msedge.exe"
+    edge.parent.mkdir(parents=True)
+    edge.write_bytes(b"")
+    brave = tmp_path / "brave.exe"
+    brave.write_bytes(b"")
+    for var in ("ProgramW6432", "PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+        monkeypatch.setenv(var, str(tmp_path))
+    monkeypatch.setattr(browser, "_registry_browsers", lambda: [(browser.BRAVE, str(brave))])
+    assert [n for n, _p in browser._real_browsers()] == [browser.EDGE, browser.BRAVE]
+
+
+def _serve(handler_body, status=200):
+    """A one-shot local HTTP server on a free port, for the readiness check."""
+    import http.server
+    import threading
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = handler_body.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def test_readiness_means_devtools_answered_not_just_the_port():
+    """The listener opens before the protocol is up. Attaching in that gap
+    fails and blames the wrong thing, so ready means /json/version answers
+    with the websocket address the attach will use."""
+    srv = _serve('{"Browser": "Chrome/1", "webSocketDebuggerUrl": "ws://127.0.0.1:1/devtools/browser/x"}')
+    try:
+        assert browser.wait_for_debug_port(str(srv.server_port), timeout=3) is True
+    finally:
+        srv.shutdown()
+    srv = _serve("not devtools", status=404)
+    try:
+        assert browser.wait_for_debug_port(str(srv.server_port), timeout=1) is False
+    finally:
+        srv.shutdown()
+    srv = _serve('{"Browser": "Chrome/1"}')        # answers, but no websocket yet
+    try:
+        assert browser.wait_for_debug_port(str(srv.server_port), timeout=1) is False
+    finally:
+        srv.shutdown()
+
+
+# -- a prompt nobody can answer (#48) ----------------------------------------
+
+def test_a_question_with_nobody_to_ask_comes_back_as_none(monkeypatch):
+    """The panel closes an app's stdin so a stray prompt cannot hang a
+    run. An app that asked anyway read end-of-file and took the process
+    down, which closed the browser window the person was signing in to."""
+    monkeypatch.setattr(browser, "can_ask", lambda: False)
+    assert browser.ask_or_none("anything? ") is None
+
+
+def test_a_windows_null_stdin_claims_to_be_a_terminal_and_is_still_handled(monkeypatch):
+    """A process handed DEVNULL on Windows reports isatty() as True and
+    then raises at the first read, so can_ask alone is not enough."""
+    monkeypatch.setattr(browser, "can_ask", lambda: True)
+
+    def boom(prompt=""):
+        raise EOFError()
+    monkeypatch.setattr("builtins.input", boom)
+    assert browser.ask_or_none("anything? ") is None
+
+
+def test_an_answer_comes_back_when_there_is_somebody(monkeypatch):
+    monkeypatch.setattr(browser, "can_ask", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "  yes  ")
+    assert browser.ask_or_none("anything? ") == "  yes  "
+
+
+def test_signing_in_without_a_console_says_what_to_press_and_does_not_wait(monkeypatch):
+    monkeypatch.setattr(browser, "can_ask", lambda: False)
+    said = []
+    assert browser.pause_for_sign_in(say=said.append, next_step="Pilot") is False
+    text = " ".join(said)
+    assert "leave it open" in text
+    assert "Pilot" in text
+
+
+def test_signing_in_with_a_console_waits(monkeypatch):
+    monkeypatch.setattr(browser, "can_ask", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+    said = []
+    assert browser.pause_for_sign_in(say=said.append) is True
+    assert said == [], "nothing is explained when somebody was there to ask"

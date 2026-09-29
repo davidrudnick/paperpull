@@ -1,0 +1,64 @@
+{
+  "_comment": "Editable rules mapping TSP mailbox subjects to filename summaries. Case-insensitive regexes matched against the subject, checked in order: tax, then statement. Mapped against a real mailbox 2026-09-18. Notices (Payment Confirmation, Payment Rights Notice, Rollover Contribution Status, Next Steps for your Rollover) match no rule and become Other Document, which is out of scope unless added to document_types.",
+  "tax_rules": [
+    {
+      "pattern": "1099-?R\\b",
+      "summary": "1099-R Tax Form"
+    },
+    {
+      "pattern": "\\b1099\\b",
+      "summary": "1099 Tax Form"
+    },
+    {
+      "pattern": "\\b5498\\b",
+      "summary": "5498 Tax Form"
+    },
+    {
+      "pattern": "tax\\s+(statement|document|form|notice)",
+      "summary": "Tax Statement"
+    }
+  ],
+  "insurance_rules": [],
+  "statement_rules": [
+    {
+      "pattern": "annual\\s+(account|participant)\\s+statement",
+      "summary": "Annual Account Statement"
+    },
+    {
+      "pattern": "quarterly\\s+(account|participant)\\s+statement",
+      "summary": "Quarterly Account Statement"
+    },
+    {
+      "pattern": "\\bQ[1-4]\\b.*participant\\s+statement",
+      "summary": "Quarterly Account Statement"
+    },
+    {
+      "pattern": "online\\s+account\\s+statement",
+      "summary": "Online Account Statement"
+    },
+    {
+      "pattern": "account\\s+statement\\s+supplement",
+      "summary": "Account Statement Supplement"
+    },
+    {
+      "pattern": "lifetime\\s+income\\s+illustration",
+      "summary": "Lifetime Income Illustration"
+    },
+    {
+      "pattern": "participant\\s+statement",
+      "summary": "Participant Statement"
+    },
+    {
+      "pattern": "account\\s+statement",
+      "summary": "Account Statement"
+    }
+  ],
+  "skip_patterns": [
+    "privacy\\s+(notice|policy)",
+    "terms\\s+of\\s+(use|service)",
+    "fund\\s+(fact\\s+)?sheet",
+    "newsletter",
+    "highlights",
+    "summary\\s+of\\s+the\\s+thrift"
+  ]
+}

@@ -34,14 +34,13 @@ event -> download.save_as(), until diagnose shows otherwise.
 """
 from __future__ import annotations
 
-import base64
-import html as _html
-import json
 import logging
 import re
-from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+from paperpull_core.dates import last_day as _last_day
+from paperpull_core.dates import checked as _checked_date
 
 log = logging.getLogger("mtb_docs.site")
 
@@ -141,7 +140,7 @@ DATE_PATTERNS = [
                 r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
                 r"Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+(\d{4})", re.I), "mdY"),
     (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"), "mdy_slash"),
-    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "iso"),
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?!\d)"), "iso"),
 ]
 _MONTHS = {m: i + 1 for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
@@ -151,17 +150,9 @@ MONTH_YEAR_RE = re.compile(
     r"\s+(\d{4})", re.I)
 QUARTER_RE = re.compile(r"\bQ([1-4])\s*[' ]?\s*(\d{4})\b", re.I)
 YEAR_RE = re.compile(r"\b(19|20)(\d{2})\b")
-_LAST_DAY = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30,
-             7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31}
 
 
-def _last_day(year: int, month: int) -> int:
-    if month == 2 and (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
-        return 29
-    return _LAST_DAY[month]
-
-
-def parse_date(text: str) -> Optional[str]:
+def _parse_date_from_page(text: str) -> Optional[str]:
     if not text:
         return None
     for pattern, kind in DATE_PATTERNS:
@@ -178,6 +169,15 @@ def parse_date(text: str) -> Optional[str]:
         except (KeyError, ValueError):
             continue
     return None
+
+
+def parse_date(text):
+    """The date this provider's page is showing, as YYYY-MM-DD.
+
+    The reading is below, unchanged. This only refuses to believe a result
+    that names a day which does not exist, because a reference number is
+    shaped like a date and used to be taken for one."""
+    return _checked_date(_parse_date_from_page(text), None)
 
 
 def parse_period_date(text: str) -> Tuple[Optional[str], str]:
@@ -273,25 +273,14 @@ def is_safe_control(name: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def is_safe_url(url: str) -> bool:
-    """On an M&T host, by parsed comparison, never a string prefix.
+    """True only for an https URL on exactly one of this provider's own
+    hosts, never a subdomain of one.
 
-    A mortgage servicer can move money, so every URL this app fetches must be
-    on M&T's own host. Parsed and allowlisted, so a suffix host
-    (onlinebanking.mtb.com.evil.test) or a userinfo host
-    (onlinebanking.mtb.com@evil.test) cannot walk through.
-    """
-    from urllib.parse import urlparse
-    try:
-        got = urlparse(url or "")
-    except ValueError:
-        return False
-    if got.scheme != "https" or not got.hostname:
-        return False
-    if (got.hostname or "").lower() not in ALLOWED_HOSTS:
-        return False
-    if got.username or got.password:
-        return False
-    return True
+    The check itself lives in the core, so all of them answer the same way.
+    This app keeps the hosts and its refusal to follow subdomains, which is
+    how it has always behaved."""
+    from paperpull_core.urls import is_safe_url as _host_allows
+    return _host_allows(url, ALLOWED_HOSTS, subdomains=False)
 
 
 def goto_documents(page) -> bool:
@@ -316,25 +305,6 @@ def goto_documents(page) -> bool:
 # clicked page controls with no safety check at all. Dead code near a
 # mortgage is a loaded gun, so it was removed rather than left to be
 # revived by a future repair. M&T's real mechanism is below.
-
-# ===========================================================================
-# M&T document collection. CONFIRMED against a live account 2026-08-22.
-#
-# Two server-rendered pages, both with real download URLs (no SPA, no blob):
-#   Statements: onlinebanking.mtb.com/Statements/StatementsAndNotices
-#     rows are <a href="/Statements/FetchStatementandNotices?t=<TYPE>&a=..&
-#     dt=MM/DD/YYYY&stmtId=..">. t=MTGSTMT is a mortgage statement, t=YESTMT a
-#     year-end statement.
-#   Tax:        m.mtb.com/TaxDocuments/TaxDocumentCenter
-#     rows are <a href="/TaxDocuments/FetchTaxDocument?documentkey=..">, the
-#     1098 mortgage-interest statements.
-#
-# A document is identified by its own href. Downloading is a plain GET of that
-# href with the session cookie, host-checked first. The ONLY thing ever clicked
-# is a collapsed year section, and that click is guarded like any other.
-# ===========================================================================
-STATEMENTS_URL = f"{BASE}/Statements/StatementsAndNotices"
-TAX_URL = "https://m.mtb.com/TaxDocuments/TaxDocumentCenter"
 
 _STMT_TYPE = {"MTGSTMT": "Mortgage Statement", "YESTMT": "Year-End Statement"}
 
@@ -491,8 +461,8 @@ def collect_statement_rows(page) -> List[dict]:
                 continue
             label = re.sub(r"\s+", " ", a.get("label") or "").strip()
             m = re.search(r"[?&]t=([A-Z]+)", href)
-            # An unrecognised t= is NOT assumed to be a mortgage statement. The
-            # page also offers notices and analysis statements; labelling one of
+            # An unrecognized t= is NOT assumed to be a mortgage statement. The
+            # page also offers notices and analysis statements; labeling one of
             # those "Mortgage Statement" would file it under a name that is
             # simply untrue. Unknown types keep the row's own text and land in
             # Other Documents, where they are visible rather than disguised.
@@ -537,7 +507,7 @@ def collect_statement_rows(page) -> List[dict]:
                     break
                 label = fr.evaluate(_OPEN_TABLE_LABEL_JS) or ""
                 if FORBIDDEN_CONTROL_RE.search(label):
-                    log.warning("refusing to expand a section labelled %r", label[:40])
+                    log.warning("refusing to expand a section labeled %r", label[:40])
                     break
                 if not fr.evaluate(_OPEN_TABLE_CLICK_JS):
                     break
@@ -639,7 +609,6 @@ def download_statement(page, href: str, out_path) -> bool:
     a stored or tampered value cannot send the session cookie somewhere else.
     Raises SessionExpired if the server hands back a sign-in page.
     """
-    from pathlib import Path
     url = _abs(href)
     if _endpoint_of(url) is None:
         log.error("refusing a URL that is not an M&T document endpoint")

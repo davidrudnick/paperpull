@@ -11,7 +11,7 @@ credentials and never bypasses AAFMAA's 2FA or security checks.
 > 60-document run. One caveat: only the default MY DOCUMENTS section is read.
 > The Insurance Documents and Digital Vault sections are separate postback
 > views and are not discovered yet, so anything held only there will not be
-> archived. `diagnose.bat` shows the section links for whoever adds them.
+> archived. `paperpull aafmaa diagnose` shows the section links for whoever adds them.
 
 ## Read-only by design (this portal can move money)
 
@@ -43,7 +43,7 @@ belongs to a different document. The gate is tested.
 
 `login.bat` opens an ordinary Chromium (debugging port **9238**) that **you**
 sign into. The tool then connects to that already-signed-in browser and reads
-only the pages you are authorised to see. No stealth, no evasion.
+only the pages you are authorized to see. No stealth, no evasion.
 
 **The signed-in browser window must stay OPEN while the tool runs.**
 
@@ -56,7 +56,7 @@ once without two apps sharing a profile.
 
 - The session is a **server-side cookie**, so navigating straight to a deep
   page keeps you signed in. Unlike the Amex app, nothing is lost on `goto`.
-- Many "links" are not links — they are `__doPostBack(...)` handlers on an
+- Many "links" are not links, they are `__doPostBack(...)` handlers on an
   `<a>`, so the href tells you nothing and the control has to be clicked.
   Where a real handler URL with a document id exists, the tool uses that
   instead; clicking a row is the fallback.
@@ -78,7 +78,7 @@ Filenames: `YYYY-MM-DD AAFMAA <Summary>.pdf`, e.g.
 `2025-12-31 AAFMAA 1099-INT Tax Form.pdf`.
 
 Naming rules are in `document_rules.json` (plain regex -> summary, editable,
-no code changes needed). Those rules are provisional too — retune them once
+no code changes needed). Those rules are provisional too, retune them once
 you have seen what your account actually calls things.
 
 ## Setup / workflow
@@ -87,12 +87,12 @@ you have seen what your account actually calls things.
 |------|---------|--------------|
 | 1 | `setup.bat` | Creates `.venv`, installs Playwright + pypdf, downloads Chromium |
 | 2 | `login.bat` | Opens Chromium (port 9238); sign in, open your documents area, **leave open** |
-| 3 | `diagnose.bat` | Read-only look at the page structure; downloads nothing |
-| 4 | `run_pilot.bat` | 5 newest documents, then **stops** for your inspection |
+| 3 | `paperpull aafmaa diagnose` | Read-only look at the page structure; downloads nothing |
+| 4 | `paperpull aafmaa pilot` | 5 newest documents, then **stops** for your inspection |
 | 5 | inspect the PDFs/CSV | You approve before anything bigger runs |
-| 6 | `run_all.bat` | Everything in scope (asks for `YES`) |
-| any time | `resume.bat` | Continue after an interruption; never redoes finished work |
-| any time | `verify_documents.bat` | Re-validate every saved PDF |
+| 6 | `paperpull aafmaa all` | Everything in scope (asks for `YES`) |
+| any time | `paperpull aafmaa resume` | Continue after an interruption; never redoes finished work |
+| any time | `paperpull aafmaa verify` | Re-validate every saved PDF |
 
 Filters: `--type "Insurance Document"`, `--year 2025`,
 `--start-date 2025-01-01`.
@@ -100,8 +100,8 @@ Filters: `--type "Insurance Document"`, `--year 2025`,
 ## If a site change breaks it
 
 All the site-specific logic lives in `aafmaa_site.py`. If AAFMAA redesigns its
-pages and discovery or download stops working, run `diagnose.bat` after signing
-in — it dumps the current page structure to `Diagnostics\` so the selectors can
+pages and discovery or download stops working, run `paperpull aafmaa diagnose` after signing
+in, it dumps the current page structure to `Diagnostics\` so the selectors can
 be updated to match. Nothing else in the app needs to change.
 
 ## Sensitive files
@@ -111,7 +111,7 @@ numbers and coverage amounts. They are saved to the folder you set as
 `output_dir` in `config.json` (the default is this app's own folder). Keep it
 somewhere safe, and if that folder syncs to a cloud drive, know these
 documents go with it. The index CSV deliberately records **no** policy
-numbers, coverage amounts, or SSN — only what is needed to find and verify a
+numbers, coverage amounts, or SSN, only what is needed to find and verify a
 file.
 
 ## Tests

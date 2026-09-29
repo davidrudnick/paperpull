@@ -11,7 +11,7 @@ from __future__ import annotations
 import base64
 import logging
 import re
-import urllib.request
+from urllib.request import Request, urlopen
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -509,8 +509,8 @@ def download_insert(cms_pdf: str, out_path: Path, attempts: int = 2) -> bool:
         return False
     for attempt in range(attempts):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urlopen(req, timeout=60) as resp:
                 data = resp.read()
             if _write_if_pdf(data, out_path):
                 return True

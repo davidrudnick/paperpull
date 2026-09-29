@@ -57,6 +57,8 @@ config.json.*
 **/Orders/
 **/In-Store/
 **/Online/
+**/App Store/
+**/Apple Store/
 **/Logs/
 **/Diagnostics/
 **/Backups/
@@ -89,6 +91,12 @@ Thumbs.db
 # current each archive is. It belongs next to your installs, never in the repo.
 status.html
 **/status.html
+# spreadsheets the exporters write beside the installs, and the reader's cache
+*Purchases.xlsx
+*Purchases.csv
+*Transactions.xlsx
+*Transactions.csv
+.transactions-cache.json
 
 # build output
 dist/
@@ -107,3 +115,6 @@ gui-state.json*
 
 # Personal assistant settings stay local
 .claude/
+
+# Release working area: downloaded artifacts and the notes for a pending release
+.release/

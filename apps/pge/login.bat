@@ -2,6 +2,7 @@
 setlocal
 cd /d "%~dp0"
 set PY=.venv\Scripts\python.exe
+if exist "..\..\.venv\Scripts\python.exe" set PY=..\..\.venv\Scripts\python.exe
 
 set CFG=
 if not "%~1"=="" set CFG=--config config.%~1.json

@@ -25,30 +25,40 @@ from __future__ import annotations
 
 import base64
 import html as _html
-import json
 import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+from paperpull_core.delivery import TAB, DocumentRequest
+from paperpull_core.identity import Identity
 from typing import List, Optional, Tuple
+
+from paperpull_core.dates import last_day as _last_day
+from paperpull_core.dates import checked as _checked_date
+from paperpull_core.controls import safe_selects as _safe_selects
+from paperpull_core.controls import click_next_page as _click_next_page
 
 log = logging.getLogger("navyfederal_docs.site")
 
 BASE = "https://www.navyfederal.org"
+# The signed-in banking app lives on its own host. The statements page
+# moved here in 2026-09 (#30), and every www.navyfederal.org path the app
+# used to try answers Page Not Found, outside the banking app, which ends
+# the session.
+BANKING = "https://digitalomni.navyfederal.org/nfcu-online-banking"
 URLS = {
     "home": f"{BASE}/",
     "login": f"{BASE}/",
-    # Document-center candidates (Navy Federal has moved these around). goto_documents
-    # tries each; if none match, it uses whatever page you left open.
-    "documents": f"{BASE}/inet/wc/my-documents-and-statements",
-    "documents_alt": f"{BASE}/my/documents",
-    "documents_alt2": f"{BASE}/inet/ent_documents/CpDocumentsAndStatements",
-    "statements": f"{BASE}/my/statements",
+    "documents": f"{BANKING}/statements",
+    "statements": f"{BANKING}/statements",
+    # The path before 2026-09, kept as the one fallback.
+    "documents_old": f"{BASE}/my/documents",
 }
-# /my/documents confirmed as the real document center (2026-07-23); try it
-# first, then the older paths as fallbacks.
-DOCUMENT_URL_CANDIDATES = [URLS["documents_alt"], URLS["documents"],
-                           URLS["documents_alt2"], URLS["statements"]]
+# Tried in order by goto_documents, after the page already open has had
+# its chance. Read off the live site with the statement list on screen,
+# 2026-09-20 (#30).
+DOCUMENT_URL_CANDIDATES = [URLS["statements"], URLS["documents_old"]]
 
 LOGIN_URL_MARKERS = ["/logon", "/login", "/signin", "/auth", "/idp", "/mfa",
                      "/verify", "logon.navyfederal"]
@@ -122,7 +132,7 @@ DATE_PATTERNS = [
                 r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
                 r"Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+(\d{4})", re.I), "mdY"),
     (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"), "mdy_slash"),
-    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "iso"),
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?!\d)"), "iso"),
 ]
 _MONTHS = {m: i + 1 for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
@@ -132,17 +142,9 @@ MONTH_YEAR_RE = re.compile(
     r"\s+(\d{4})", re.I)
 QUARTER_RE = re.compile(r"\bQ([1-4])\s*[' ]?\s*(\d{4})\b", re.I)
 YEAR_RE = re.compile(r"\b(19|20)(\d{2})\b")
-_LAST_DAY = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30,
-             7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31}
 
 
-def _last_day(year: int, month: int) -> int:
-    if month == 2 and (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
-        return 29
-    return _LAST_DAY[month]
-
-
-def parse_date(text: str) -> Optional[str]:
+def _parse_date_from_page(text: str) -> Optional[str]:
     if not text:
         return None
     for pattern, kind in DATE_PATTERNS:
@@ -159,6 +161,15 @@ def parse_date(text: str) -> Optional[str]:
         except (KeyError, ValueError):
             continue
     return None
+
+
+def parse_date(text):
+    """The date this provider's page is showing, as YYYY-MM-DD.
+
+    The reading is below, unchanged. This only refuses to believe a result
+    that names a day which does not exist, because a reference number is
+    shaped like a date and used to be taken for one."""
+    return _checked_date(_parse_date_from_page(text), None)
 
 
 def parse_period_date(text: str) -> Tuple[Optional[str], str]:
@@ -253,10 +264,31 @@ def is_safe_control(name: str) -> bool:
 # Documents page
 # ---------------------------------------------------------------------------
 
+def has_document_list(page) -> bool:
+    """Whether the page on screen is the statements page. Statement rows
+    only exist in the DOM once a group is expanded, and the page opens
+    with every group collapsed, so the group headers count as much as the
+    rows do. Counting rows alone made a correctly loaded page look like a
+    miss (#30)."""
+    try:
+        if page.locator(FALLBACK["doc_row"]).count() > 1:
+            return True
+        return page.locator(GROUP_SEL).count() > 0
+    except Exception:
+        return False
+
+
 def goto_documents(page) -> bool:
-    """Navigate to a document area. Tries known URLs; if none render a
-    document list, keeps whatever page is currently open (so you can navigate
-    to the right place manually and the tool reads it)."""
+    """Navigate to the statements page.
+
+    The page already open is checked FIRST. If the person navigated there
+    by hand, it is read as it is, which is the recovery path the README
+    promises. The candidate loop used to run unconditionally, so a hand
+    opened page was replaced by the first candidate, and when every
+    candidate missed the browser was left on a 404 outside the banking
+    app, which ended the session and cost a sign-in per retry (#30)."""
+    if is_safe_url(page.url or "") and not looks_signed_out(page) and has_document_list(page):
+        return True
     for url in DOCUMENT_URL_CANDIDATES:
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -267,7 +299,7 @@ def goto_documents(page) -> bool:
                 page.wait_for_selector(FALLBACK["page_ready"], timeout=12000)
             except Exception:
                 pass
-            if page.locator(FALLBACK["doc_row"]).count() > 1:
+            if has_document_list(page):
                 return True
         except Exception as e:
             log.info("documents URL %s failed: %s", url, e)
@@ -280,11 +312,11 @@ def goto_documents(page) -> bool:
             if not FORBIDDEN_CONTROL_RE.search(label):
                 link.first.click()
                 page.wait_for_timeout(3000)
-                return page.locator(FALLBACK["doc_row"]).count() > 1
+                return has_document_list(page)
     except Exception:
         pass
     # fall back to the current page
-    return page.locator(FALLBACK["doc_row"]).count() > 1
+    return has_document_list(page)
 
 
 def scroll_full_page(page, rounds: int = 6, delay_ms: int = 700) -> None:
@@ -318,19 +350,15 @@ def expand_all(page) -> None:
 
 
 def next_page(page) -> bool:
-    try:
-        loc = page.locator(FALLBACK["next_page"])
-        if loc.count() > 0 and loc.first.is_visible() and loc.first.is_enabled():
-            label = (loc.first.inner_text(timeout=800) or "") + \
-                (loc.first.get_attribute("aria-label") or "")
-            if FORBIDDEN_CONTROL_RE.search(label):
-                return False
-            loc.first.click()
-            page.wait_for_timeout(2500)
-            return True
-    except Exception:
-        pass
-    return False
+    """One page forward, through a control that says it pages forward.
+
+    Judged by an allowlist in the core rather than by FORBIDDEN_CONTROL_RE,
+    because that blocklist refuses the word "next". Correctly, since "Next"
+    is also what a wizard's commit button says, and fatally here, because it
+    meant this could never page forward at all and the run reported success
+    having seen only the first page.
+    """
+    return _click_next_page(page, FALLBACK["next_page"])
 
 
 @dataclass
@@ -399,76 +427,6 @@ _BLOB_FETCH_JS = r"""async () => {
 }"""
 
 
-def collect_documents_via_api(page) -> List[dict]:
-    """Enumerate EVERY document by capturing the Navy Federal documents JSON API as the
-    page loads/pages, rather than scraping the visible table.
-
-    The SPA calls
-      GET .../my-documents/experience/individuals/<id>/documents?limit=100
-    returning {"documents":[{title, displayDate, accountName, category,
-    subCategory, documentId, documentDate, ...}]} newest-first, in pages. We
-    capture every such response while scrolling + clicking through the pager,
-    then de-duplicate by documentId. Returns the raw document dicts.
-    """
-    batches: List[list] = []
-
-    def on_resp(r):
-        try:
-            u = r.url
-            if "/documents" not in u or "?" not in u:
-                return
-            if "json" not in (r.headers.get("content-type", "") or "").lower():
-                return
-            data = json.loads(r.text())
-            if isinstance(data, dict) and isinstance(data.get("documents"), list):
-                batches.append(data["documents"])
-        except Exception:
-            pass
-
-    page.on("response", on_resp)
-    try:
-        goto_documents(page)
-        page.wait_for_timeout(3500)
-        last_total = -1
-        stagnant = 0
-        for _ in range(150):  # generous cap
-            for _ in range(3):
-                page.mouse.wheel(0, 5000)
-                page.wait_for_timeout(700)
-            advanced = False
-            try:
-                nxt = page.get_by_role("button", name=re.compile(r"^\s*next page\s*$", re.I))
-                if nxt.count() == 0:
-                    nxt = page.get_by_role("link", name=re.compile(r"^\s*next page\s*$", re.I))
-                if nxt.count() and nxt.first.is_visible() and nxt.first.is_enabled():
-                    nxt.first.click()
-                    page.wait_for_timeout(1800)
-                    advanced = True
-            except Exception:
-                pass
-            total = sum(len(b) for b in batches)
-            if total == last_total and not advanced:
-                stagnant += 1
-                if stagnant >= 3:
-                    break
-            else:
-                stagnant = 0
-                last_total = total
-    finally:
-        try:
-            page.remove_listener("response", on_resp)
-        except Exception:
-            pass
-
-    docs: dict = {}
-    for batch in batches:
-        for d in batch:
-            did = d.get("documentId")
-            if did and did not in docs:
-                docs[did] = d
-    return list(docs.values())
-
-
 def document_deeplink(document_id: str, document_date: str) -> str:
     return f"{BASE}/my/documents?documentId={document_id}&documentDate={document_date}"
 
@@ -496,93 +454,7 @@ def download_by_id(page, document_id: str, document_date: str, out_path) -> bool
     except Exception as e:
         log.info("download_by_id failed for %s: %s", document_id, e)
     return False
-
-
-def _find_doc_row(page, title: str, date_text: str, account: str):
-    """Return the readDocument (title) button for the row matching this
-    document, or None. Matched by content because row indexes are unstable."""
-    try:
-        rows = page.locator("table tr")
-        for i in range(rows.count()):
-            row = rows.nth(i)
-            try:
-                text = row.inner_text(timeout=800) or ""
-            except Exception:
-                continue
-            if title and title[:40] not in text:
-                continue
-            if date_text and date_text not in text:
-                continue
-            if account and account[:18] and account[:18] not in text:
-                continue
-            rd = row.locator("[data-testid^='readDocument-']")
-            if rd.count() > 0:
-                return rd.first
-    except Exception:
-        pass
-    return None
-
-
-def download_document_row(page, title: str, date_text: str, account: str,
-                          out_path) -> bool:
-    """Reload a fresh document list, click this document's title, and capture
-    the PDF it renders inline.
-
-    Navy Federal shows the PDF as a blob: iframe (no download event, no direct link).
-    We ALWAYS reload the list first so no previous document's iframe lingers -
-    that stale iframe was the cause of every capture returning the same file.
-    After the click we wait for a fresh blob iframe, then fetch its bytes in
-    the page context.
-    """
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # fresh list -> guarantees no leftover PDF iframe from the previous doc
-    goto_documents(page)
-    scroll_full_page(page, rounds=2)
-    rd = _find_doc_row(page, title, date_text, account)
-    if rd is None:
-        log.info("row not found for %r %r %r", title, date_text, account)
-        return False
-
-    try:
-        rd.click()
-        # the inline PDF renders into a blob: iframe once the click resolves
-        page.wait_for_selector("iframe[src^='blob:']", timeout=30000)
-        page.wait_for_timeout(1800)
-        b64 = page.evaluate(r"""async () => {
-            const f = document.querySelector("iframe[src^='blob:']");
-            if (!f || !f.src) return null;
-            const r = await fetch(f.src);
-            const buf = new Uint8Array(await r.arrayBuffer());
-            let s = ''; for (let i = 0; i < buf.length; i++) s += String.fromCharCode(buf[i]);
-            return btoa(s);
-        }""")
-        if b64:
-            data = base64.b64decode(b64)
-            if b"%PDF-" in data[:1024]:
-                out_path.write_bytes(data)
-                return True
-            log.info("blob for %r was not a PDF (%d bytes)", title, len(data))
-    except Exception as e:
-        log.info("capture failed for %r: %s", title, e)
-    return False
-
-
-# ===========================================================================
-# Navy Federal document center (verified 2026-08). Statements live on ONE page
-# (digitalomni SPA) grouped by account into expandable accordions; each row's
-# "View" button opens the PDF as a blob in a new tab. No documents API.
-# ===========================================================================
-STATEMENTS_URL = "https://digitalomni.navyfederal.org/nfcu-online-banking/statements"
 GROUP_SEL = "[class*='product-kind-description-row']"
-
-_NFCU_BLOB_FETCH = r"""async (u) => {
-    const r = await fetch(u);
-    const buf = new Uint8Array(await r.arrayBuffer());
-    let s = ''; for (let i = 0; i < buf.length; i++) s += String.fromCharCode(buf[i]);
-    return btoa(s);
-}"""
 
 
 def dismiss_timeout(page) -> None:
@@ -684,14 +556,19 @@ def collect_group_rows(page):
 
 def year_select(page):
     """The 'Previous Statements' archive has a year dropdown (2021..2026).
-    Return (locator, [years]) if such a <select> is present, else (None, [])."""
-    loc = page.locator("select")
-    for i in range(min(loc.count(), 12)):
-        s = loc.nth(i)
+    Return (locator, [years]) if such a <select> is present, else (None, []).
+
+    Every dropdown on the page is a candidate, which is why they go through
+    the core's filter first. On Ally the same lookup once matched a money
+    TRANSFER widget's <select> and set it, on a page that had not even been
+    confirmed as the right one. This is a credit union.
+    """
+    for s, _identity in _safe_selects(page, FORBIDDEN_CONTROL_RE,
+                                      signed_out=looks_signed_out):
         try:
             opts = [o.strip() for o in s.locator("option").all_inner_texts()]
         except Exception:
-            opts = []
+            continue
         years = [o for o in opts if re.fullmatch(r"20\d{2}", o)]
         if years:
             return s, years
@@ -731,12 +608,38 @@ def nfcu_collect(page):
     return docs
 
 
-def nfcu_download(page, ctx, account: str, date: str, out_path) -> bool:
-    """Expand the account group, click the View button on the row dated `date`,
-    capture the blob PDF that opens in a new tab, and save it."""
-    import base64
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+def identity_for(doc) -> Identity:
+    """A date, and the account the row belonged to.
+
+    The account is the fact that matters here. Every account is billed
+    on the same day, so eight dates in this archive carry more than one
+    statement and the date alone places none of them. The account name
+    is useless on its own, since every statement in a group carries it,
+    and decisive against the statement beside it."""
+    return Identity(date=str(getattr(doc, "date", "") or "")[:10],
+                    label=str(getattr(doc, "account", "") or ""))
+
+
+def statement_request(page, account: str, date: str):
+    """Everything up to the View click, for the statement dated `date`.
+
+    Expand the account group, dismiss the inactivity modal, pick the
+    year if the archive hides rows behind one, and find that row's View
+    button. Then stop.
+
+    What the click produces is not this app's business. Navy Federal
+    renders the PDF into a blob tab today, and the bytes of a blob can
+    only be read by the page that minted it, which delivery.take_new_tab
+    already knows. Handing the click over means a change to a download
+    or an inline tab needs no round here.
+
+    Two things this provider needs that a plain click does not. The
+    inactivity modal reappears while the blob tab is opening and delays
+    it, so it is dismissed on every poll. And the blob tab is closed
+    once read, because a full archive is hundreds of statements and
+    each one used to leave a tab behind.
+
+    None when the row cannot be reached."""
     if not expand_only(page, account):
         expand_only(page, account.split()[0] if account else account)
     dismiss_timeout(page)
@@ -765,51 +668,25 @@ def nfcu_download(page, ctx, account: str, date: str, out_path) -> bool:
         pass
     if btn is None:
         log.info("statement row not found for %s %s", account, date)
-        return False
+        return None
 
-    # close any stale blob tab so we capture THIS statement's blob, not a prior one
-    for p in list(ctx.pages):
-        if (p.url or "").startswith("blob:"):
-            try:
-                p.close()
-            except Exception:
-                pass
-
-    try:
-        btn.click()
-    except Exception as e:
-        log.info("view click failed for %s %s: %s", account, date, e)
-        return False
-
-    # the PDF opens as a blob in a new tab; poll for it (dismissing the
-    # inactivity modal while we wait, which can otherwise delay the open)
-    blob_page = None
-    for _ in range(24):                 # up to ~12s
-        page.wait_for_timeout(500)
-        dismiss_timeout(page)
-        for p in ctx.pages:
-            if (p.url or "").startswith("blob:"):
-                blob_page = p
-                break
-        if blob_page:
-            break
-    if blob_page is None:
-        log.info("no blob tab opened for %s %s", account, date)
-        return False
-
-    ok = False
-    try:
-        data = base64.b64decode(page.evaluate(_NFCU_BLOB_FETCH, blob_page.url))
-        ok = data[:5] == b"%PDF-"
-        if ok:
-            out_path.write_bytes(data)
-    except Exception as e:
-        log.info("blob fetch failed for %s %s: %s", account, date, e)
-    try:
-        blob_page.close()
-    except Exception:
-        pass
-    return ok
+    # Closing stale blob tabs before clicking is no longer needed. The
+    # interceptor collects only the tabs that open after it starts
+    # listening, so a tab left by an earlier statement cannot be read as
+    # this one. That was the whole reason for the old sweep.
+    # The same facts identity_for gives every other row. Built from the
+    # date alone, the one fact this statement shared with the other
+    # accounts billed that day cancelled out, and any account name a
+    # neighbor owned outweighed it, so a correct Checking statement that
+    # mentioned a Visa payment was refused and deleted. The measurement
+    # that turned refusal on used the account on both sides.
+    return DocumentRequest(
+        trigger=btn.click,
+        expect=Identity(date=str(date or "")[:10],
+                        label=str(account or "")),
+        while_waiting=lambda: dismiss_timeout(page),
+        close_new_tabs=True,
+        hints=(TAB,))
 
 
 # ---------------------------------------------------------------------------
@@ -822,15 +699,9 @@ ALLOWED_HOSTS = {'navyfederal.org'}
 
 
 def is_safe_url(url: str) -> bool:
-    """True only for an https URL on one of this provider's own hosts."""
-    from urllib.parse import urlparse
-    try:
-        got = urlparse(url or "")
-    except ValueError:
-        return False
-    if got.scheme != "https" or not got.hostname:
-        return False
-    if got.username or got.password:
-        return False
-    host = got.hostname.lower().rstrip(".")
-    return any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS)
+    """True only for an https URL on one of this provider's own hosts.
+
+    The check itself lives in the core, so all of them answer the same way.
+    This app keeps the hosts, which is the part that really is its own."""
+    from paperpull_core.urls import is_safe_url as _host_allows
+    return _host_allows(url, ALLOWED_HOSTS)
