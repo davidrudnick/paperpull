@@ -16,20 +16,21 @@ import time as _time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from urllib.parse import urlsplit, urljoin
+from paperpull_core.urls import is_safe_url as _host_allows
+from paperpull_core.dates import checked as _checked_date
 from paperpull_core.controls import SETTINGS_CONTROL_RE, AUTH_CONTROL_RE
 
 ALLOWED_HOSTS = {'api.blueprintplatform.com', 'app.blueprintplatform.com'}
 
 
 def is_safe_url(url: str) -> bool:
-    try:
-        parts = urlsplit(url or "")
-        return (parts.scheme == "https" and parts.hostname in ALLOWED_HOSTS
-                and parts.port in (None, 443) and not parts.username
-                and not parts.password)
-    except (TypeError, ValueError):
-        return False
+    """True only for an https URL on exactly one of this provider's own
+    hosts, never a subdomain of one.
+
+    The check itself lives in the core, so all of them answer the same way.
+    This app keeps the hosts and its refusal to follow subdomains, which is
+    how it has always behaved."""
+    return _host_allows(url, ALLOWED_HOSTS, subdomains=False)
 
 
 log = logging.getLogger("stp_docs.site")
@@ -152,7 +153,7 @@ ISO_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?!\d)")
 MDY_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b")
 
 
-def parse_date(text: str) -> Optional[str]:
+def _parse_date_from_page(text: str) -> Optional[str]:
     if not text:
         return None
     m = ISO_RE.search(text)
@@ -162,6 +163,15 @@ def parse_date(text: str) -> Optional[str]:
     if m:
         return f"{int(m.group(3)):04d}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
     return None
+
+
+def parse_date(text):
+    """The date this provider's page is showing, as YYYY-MM-DD.
+
+    The reading is above, unchanged. This only refuses to believe a result
+    that names a day which does not exist, because a reference number is
+    shaped like a date and used to be taken for one."""
+    return _checked_date(_parse_date_from_page(text), None)
 
 
 def looks_signed_out(page) -> bool:
